@@ -590,21 +590,23 @@ See \dQuote{\emph{XHAUST returned error code -999}} in the vignette.
   The primary references are the Friedman papers, but
   readers may find the MARS section in Hastie, Tibshirani,
   and Friedman a more accessible introduction.
-  Faraway takes a hands-on approach,
+  Faraway takes an informative hands-on approach,
   using the \code{\link[=ozone1]{ozone}} data to compare \code{mda::mars} with other techniques.
-  (If you use Faraway's examples with \code{earth} instead of \code{mars}, use \code{$bx}
-  instead of \code{$x}, and check out the book's errata.)
+  (Note: If you use Faraway's examples
+  with \code{earth} instead of \code{mars}, use \code{$bx} instead of \code{$x} --
+  and if you are using the First Edition of his book, please also check the book's errata
+  for the MARS section.)
   Friedman and Silverman is recommended background reading for the MARS paper.
   Earth's pruning pass uses code from the \code{\link[leaps]{leaps}} package
   which is based on techniques in Miller.
 
   Faraway (2005) \emph{Extending the Linear Model with R}
-  \url{https://www.maths.bath.ac.uk/~jjf23}
+  \url{https://julianfaraway.github.io/faraway/ELM/}
 
   Friedman (1991) \emph{Multivariate Adaptive Regression Splines (with discussion)}
   Annals of Statistics 19/1, 1--141
   % \code{https://statistics.stanford.edu/research/multivariate-adaptive-regression-splines}\cr
-  \url{http://projecteuclid.org/euclid.aos/1176347963}\cr
+  \url{https://projecteuclid.org/euclid.aos/1176347963}\cr
   \doi{10.1214/aos/1176347963}
 
   Friedman (1993) \emph{Fast MARS}

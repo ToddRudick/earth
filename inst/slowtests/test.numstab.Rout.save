@@ -17,7 +17,7 @@ Loading required package: plotmo
 Loading required package: plotrix
 > library(mda)
 Loading required package: class
-Loaded mda 0.5-4
+Loaded mda 0.5-5
 
 > data(ozone1)
 > data(trees)

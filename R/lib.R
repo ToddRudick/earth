@@ -532,6 +532,25 @@ get.weighted.rsq <- function(y, yhat, w=NULL) # NAs will be dropped before calc
     }
     get.rsq(rss, tss)
 }
+get.quant <- function(level, df=Inf, trace=FALSE) # e.g for level=.95 return 1.96
+{
+    check.level.arg(level, zero.ok=FALSE)
+    stopifnot(level > 0, level < 1)
+    level2 <- 1 - (1 - level) / 2 # .95 becomes .975
+    quant <- abs(qt(level2, df))
+    if(trace) {
+        callers_name1 <- callers.name(n=1)
+        callers_name2 <- callers.name(n=2)
+        callers_name3 <- callers.name(n=3)
+        callers_name4 <- callers.name(n=4)
+        callers_name5 <- callers.name(n=5)
+        callers_name6 <- callers.name(n=6)
+        printf("%s: %s: %s: %s: %s: %s:\nget.quant_plotmo2(level %g df %g)   level2 %g   quant %g\n",
+           callers_name6, callers_name5, callers_name4, callers_name3, callers_name2, callers_name1,
+           level, df, level2, quant)
+    }
+    quant
+}
 # TRUE if pattern is in any of the strings in x
 grepany <- function(pattern, x, ignore.case=FALSE, ...)
 {

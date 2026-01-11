@@ -11,7 +11,7 @@
                         @if %errorlevel% NEQ 0 goto err
 @call test.earthc.msc.bat
                         @if %errorlevel% NEQ 0 goto err
-@rem TODO Removed clang because 32-bit builds are no longer supported by rtools43
+@rem TODO Removed clang because 32-bit builds are no longer supported by rtools45, rtools45
 @rem @call test.earthmain.clang.bat
 @rem                    @if %errorlevel% NEQ 0 goto err
 @rem @call test.earthc.clang.bat

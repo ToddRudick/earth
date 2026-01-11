@@ -851,13 +851,6 @@ residmod.x.gam <- function(exponent, parent.x, parent.y, abs.resids,
     colnames(data) <- c("abs.resids", "RHS")
     residmod.gam.aux(form, data, weights, trace, iter)
 }
-get.quant <- function(level) # e.g for level=.95 return 1.96
-{
-    check.level.arg(level, zero.ok=FALSE)
-    stopifnot(level > 0, level < 1)
-    level <- 1 - (1 - level) / 2 # .95 becomes .975
-    qnorm(level)                 # .975 becomes 1.96
-}
 predict_se <- function(object, newdata)
 {
     to.sd(predict_abs_residual(object, newdata), object$lambda)

@@ -1,7 +1,7 @@
 > # test.full.R: test earth
 > 
 > print(R.version.string)
-[1] "R version 4.4.1 (2024-06-14 ucrt)"
+[1] "R version 4.5.2 (2025-10-31 ucrt)"
 > 
 > source("test.prolog.R")
 > source("check.models.equal.R")
@@ -11,7 +11,7 @@ Loading required package: plotmo
 Loading required package: plotrix
 > library(mda)
 Loading required package: class
-Loaded mda 0.5-4
+Loaded mda 0.5-5
 
 > data(ozone1)
 > data(trees)
@@ -40,8 +40,9 @@ Loaded mda 0.5-4
 To cite package 'earth' in publications use:
 
   Milborrow S, Hastie T, Tibshirani R (2011). _earth: Multivariate
-  Adaptive Regression Splines_. R package version 5.3.4,
-  <https://CRAN.R-project.org/package=earth>.
+  Adaptive Regression Splines_. doi:10.32614/CRAN.package.earth
+  <https://doi.org/10.32614/CRAN.package.earth>, R package version
+  5.3.5, <https://CRAN.R-project.org/package=earth>.
 
 A BibTeX entry for LaTeX users is
 
@@ -49,8 +50,9 @@ A BibTeX entry for LaTeX users is
     title = {earth: Multivariate Adaptive Regression Splines},
     author = {Stephen Milborrow and Trevor Hastie and Rob Tibshirani},
     year = {2011},
-    note = {R package version 5.3.4},
+    note = {R package version 5.3.5},
     url = {https://CRAN.R-project.org/package=earth},
+    doi = {10.32614/CRAN.package.earth},
   }
 > 
 > #--- test examples from man pages ------------------------------------------------------------
@@ -9323,6 +9325,13 @@ GCV 4.02    RSS 122    GRSq 0.413    RSq 0.628
 > options(width=1000)
 > 
 > library(modeldata)
+
+Attaching package: 'modeldata'
+
+The following object is masked from 'package:datasets':
+
+    penguins
+
 > data(ames)
 > vars <- c("Sale_Price", "Gr_Liv_Area", "Alley", "Mas_Vnr_Type", "BsmtFin_Type_2", "Condition_2")
 > ames2 <- ames[,vars,drop=FALSE]

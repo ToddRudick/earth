@@ -1,5 +1,12 @@
 # Changes to the earth package
 
+## 5.3.5 Dec 30, 2025
+
+  Updated some web addresses in the man pages.
+
+  We now use the t not the gaussian distribution for calculating certain variances
+  in earth variance models.  The differences should be very small.
+
 ## 5.3.4  Oct 1, 2024
 
    Fixed a bug in format.earth(style="bf") where mis-formatting
