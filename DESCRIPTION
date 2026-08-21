@@ -1,5 +1,5 @@
 Package: earth
-Version: 5.3.5
+Version: 5.3.6
 Title: Multivariate Adaptive Regression Splines
 Authors@R: c(person(given = "Stephen", family = "Milborrow",
                role = c("aut", "cre"), email = "milbo@sonic.net"),
@@ -17,10 +17,10 @@ Description: Build regression models using the techniques in Friedman's
     the name of the package.)
 License: GPL-3
 LazyData: yes
-URL: http://www.milbo.users.sonic.net/earth/
-Packaged: 2026-01-04 01:35:18 UTC; milbo
+URL: http://www.milbo.org/earth/
+Packaged: 2026-08-07 23:13:22 UTC; milbo
 Repository: CRAN
-Date/Publication: 2026-01-11 06:11:28 UTC
+Date/Publication: 2026-08-21 11:40:02 UTC
 RoxygenNote: 5.1.2
 NeedsCompilation: yes
 Author: Stephen Milborrow [aut, cre],

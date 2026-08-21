@@ -42,7 +42,7 @@ To cite package 'earth' in publications use:
   Milborrow S, Hastie T, Tibshirani R (2011). _earth: Multivariate
   Adaptive Regression Splines_. doi:10.32614/CRAN.package.earth
   <https://doi.org/10.32614/CRAN.package.earth>, R package version
-  5.3.5, <https://CRAN.R-project.org/package=earth>.
+  5.3.6, <https://CRAN.R-project.org/package=earth>.
 
 A BibTeX entry for LaTeX users is
 
@@ -50,7 +50,7 @@ A BibTeX entry for LaTeX users is
     title = {earth: Multivariate Adaptive Regression Splines},
     author = {Stephen Milborrow and Trevor Hastie and Rob Tibshirani},
     year = {2011},
-    note = {R package version 5.3.5},
+    note = {R package version 5.3.6},
     url = {https://CRAN.R-project.org/package=earth},
     doi = {10.32614/CRAN.package.earth},
   }
@@ -5941,7 +5941,7 @@ yscaled[101,1]:
  3rd Qu.: 0.8753  
  Max.   : 1.5633  
 
-earth.c version 5.3.4
+earth.c version 5.3.6
 BetaCache 3.45 kB
 Forward pass: minspan 4 endspan 7   x[101,1] 808 Bytes   bx[101,21] 16.6 kB
 

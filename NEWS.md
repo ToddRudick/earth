@@ -1,5 +1,9 @@
 # Changes to the earth package
 
+## 5.3.6 Aug 10, 2026
+
+  Updated some web addresses in the man pages.
+
 ## 5.3.5 Dec 30, 2025
 
   Updated some web addresses in the man pages.

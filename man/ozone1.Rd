@@ -40,7 +40,7 @@ Faraway (2005) \emph{Extending the Linear Model with R}
 \url{https://www.maths.bath.ac.uk/~jjf23}
 
 Hastie and Tibshirani (1990) \emph{Generalized Additive Models}
-\url{https://hastie.su.domains/pub.htm}
+\url{https://hastie.su.domains/}
 }
 \seealso{
   \code{\link{earth}}

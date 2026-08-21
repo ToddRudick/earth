@@ -5,7 +5,7 @@
 // Comments containing "TODO" mark known issues
 //
 // See the R earth documentation for descriptions of the principal data structures.
-// See also www.milbo.users.sonic.net.  This code uses a subset of C99.
+// See also www.milbo.org.  This code uses a subset of C99.
 //
 // Stephen Milborrow Feb 2007 Petaluma
 //
@@ -134,7 +134,7 @@ extern _C_ double ddot_(const int* n,
                       // use 0 for C style indices in messages to the user
 #endif
 
-static const char*  VERSION     = "version 5.3.4"; // change if you modify this file!
+static const char*  VERSION     = "version 5.3.6"; // change if you modify this file!
 static const double MIN_GRSQ    = -10.0;
 static const double QR_TOL      = 1e-8;  // same as R lm
 static const double MIN_BX_SOS  = .01;

@@ -125,7 +125,7 @@ nk degree  earth  earth | execution time ratio:                                 
 Timing Test Results On Earth Version 0.1
 ----------------------------------------
 
-NOTE Jan 2008: more recent tests can be found at www.milbo.users.sonic.net.
+NOTE Jan 2008: more recent tests can be found at www.milbo.org.
 
 Tested on a 1.5GHz Dell laptop with the robot arm from Friedman's Fast MARS paper.
 

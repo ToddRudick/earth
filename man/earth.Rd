@@ -622,12 +622,12 @@ See \dQuote{\emph{XHAUST returned error code -999}} in the vignette.
   % \url{https://www.jstor.org/stable/1270359} % CRAN check fails with "Message: Forbidden"
 
   Hastie, Tibshirani, and Friedman (2009) \emph{The Elements of Statistical Learning (2nd ed.)}
-  \url{https://hastie.su.domains/pub.htm}
+  \url{https://hastie.su.domains/}
 
   Leathwick, J.R., Rowe, D., Richardson, J., Elith, J., & Hastie, T. (2005)
   \emph{Using multivariate adaptive regression splines to predict the distributions
   of New Zealand's freshwater diadromous fish} Freshwater Biology, 50, 2034-2052
-  \url{https://hastie.su.domains/pub.htm}
+  \url{https://hastie.su.domains/}
 
   Miller, Alan (1990, 2nd ed. 2002) \emph{Subset Selection in Regression}
   \url{https://wp.csiro.au/alanmiller/index.html}
