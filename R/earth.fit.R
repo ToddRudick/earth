@@ -100,9 +100,11 @@ earth.fit <- function(
                             # effect is interpolated between its GCV break-even reduction
                             # (floor) and its unconstrained OLS effect (ceiling), with the
                             # slack shrinking as model complexity grows.  Complexity is
-                            # charged per term with an explicit knot count (linear/linpreds
-                            # term = 0 knots, hinge = 1 knot), so a hinge is shrunk more
-                            # than a linear term of equal effect.  effect.cap >= 1 => cap
+                            # charged per term: a hinge term-pair adds 2 terms and 1 knot,
+                            # a linear/linpreds term adds 1 term and 0 knots.  Most of the
+                            # hinge-vs-linear gap comes from the per-term term count; the
+                            # explicit knot charge sharpens it, so a hinge is shrunk somewhat
+                            # more than a linear term of equal effect.  effect.cap >= 1 => cap
                             # never binds (byte-for-byte stock earth); smaller => stronger
                             # shrinkage / more redistribution of signal.  Must be positive.
 

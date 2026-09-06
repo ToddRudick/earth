@@ -300,10 +300,14 @@ edges of the data).  See also the \code{Adjust.endspan} argument.
      increase GCV, so a barely-justified term is never over-capped) and the
      full unconstrained effect (the ceiling).  The interpolation slack shrinks
      as the model consumes complexity, so regularization strengthens as the
-     model grows.  The complexity charge is computed \emph{per term} using an
-     explicit knot count: a linear (or \code{linpreds}) term adds no knot, a
-     hinge term adds one knot, so at the same unconstrained effect a hinge term
-     (more complex) is shrunk more than a linear term.
+     model grows.  The complexity charge is computed \emph{per term}: a hinge
+     term-pair adds two terms while a linear (or \code{linpreds}) term adds
+     one, and the knot count is charged explicitly (a linear or \code{linpreds}
+     term adds no knot, a hinge term adds one knot).  At the same unconstrained
+     effect a hinge term (more complex) is therefore shrunk more than a linear
+     term.  Most of that difference comes from the per-term term count; the
+     explicit knot charge refines and widens it rather than being its sole
+     cause.
 \cr
      \code{effect.cap >= 1} means the cap can never bind, reproducing standard
      \code{earth} byte-for-byte; smaller values apply stronger shrinkage and

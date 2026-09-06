@@ -14,12 +14,17 @@
   effect is interpolated between the GCV break-even reduction (floor) and the
   unconstrained least-squares effect (ceiling), with the interpolation slack
   shrinking as the model consumes complexity, so regularization strengthens as
-  the model grows.  The complexity charge is computed per term with an explicit
-  knot count (a linear or `linpreds` term adds no knot, a hinge term adds one
-  knot) rather than a model-wide averaged approximation, so at equal effect a
-  hinge term is shrunk more than the cheaper linear form.  `effect.cap` is now
-  a slack-strength knob controlling how far below its OLS effect a term is
-  pushed toward its break-even (`effect.cap >= 1` reproduces stock `earth`).
+  the model grows.  The complexity charge is computed per term rather than
+  from the model-wide averaged approximation: a hinge term-pair adds two terms
+  while a linear or `linpreds` term adds one, and the knot count is charged
+  explicitly (a linear or `linpreds` term adds no knot, a hinge term adds one
+  knot).  The bulk of the hinge-vs-linear difference comes from the per-term
+  term count (which the old averaged approximation already carried); the
+  explicit knot charge sharpens that difference so that, at equal effect, a
+  hinge term is shrunk somewhat more than the cheaper linear form.
+  `effect.cap` is now a slack-strength knob controlling how far below its OLS
+  effect a term is pushed toward its break-even (`effect.cap >= 1` reproduces
+  stock `earth`).
   The cap is on the predictive effect (not the raw coefficient) and is measured
   conditional on the current model, so it is scale-invariant.  With the default
   `adaptive.gcv=FALSE` the results are byte-for-byte identical to previous

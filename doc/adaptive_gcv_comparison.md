@@ -17,14 +17,25 @@ slackFactor = (1 - clamp(Cost1))^gamma,     gamma = 1/effect.cap - 1
 Cost1       = (nOldUsedTerms + deltaTerms + Penalty*(nKnotsOld + deltaKnots)) / n
 ```
 
-where `RssDelta` is the unconstrained OLS effect (ceiling), `BreakEven` is
-the GCV break-even reduction (floor), and the key Stage-1 change is the
-**explicit per-term knot charge**: `deltaKnots = 0` for a linear/`linpreds`
-term and `deltaKnots = 1` for a hinge term.  Because `Cost1` rises with
-`deltaKnots` and `slackFactor` decreases with `Cost1`, a HINGE term gets a
-SMALLER budget than a LINEAR term carrying the same OLS effect.
-`effect.cap >= 1` forces `slackFactor == 1` and reproduces stock earth
-byte-for-byte.
+where `RssDelta` is the unconstrained OLS effect (ceiling) and `BreakEven` is
+the GCV break-even reduction (floor).  The Stage-1 change replaces the old
+model-wide averaged approximation `(nUsedTerms-1)/2` with a **per-term
+complexity charge**.  Two things distinguish a hinge from a linear term in
+`Cost1`:
+
+- `deltaTerms`: a hinge term-pair adds **2** terms, a linear/`linpreds` term
+  adds **1**.  This is the larger effect, and the old averaged formula already
+  carried it (via `nUsedTerms`).
+- `deltaKnots`: the new **explicit per-term knot charge**, `deltaKnots = 1`
+  for a hinge and `deltaKnots = 0` for a linear/`linpreds` term.  This refines
+  the charge (the averaged formula charged a linear term `0.5` knots on
+  average, not `0`), so it *widens* the hinge-vs-linear gap rather than being
+  its sole cause.
+
+Because `Cost1` rises with both `deltaTerms` and `deltaKnots`, and
+`slackFactor` decreases with `Cost1`, a HINGE term gets a SMALLER budget than
+a LINEAR term carrying the same OLS effect.  `effect.cap >= 1` forces
+`slackFactor == 1` and reproduces stock earth byte-for-byte.
 
 ## The Stage-1 question
 
@@ -89,21 +100,24 @@ algorithm is Stage 2 and is deliberately out of scope here.
 
 ## Divergence verdict per dataset
 
-- **ozone1** (dominant `temp`): YES - the cheaper LINEAR form (0 knots) carries a lower Cost1, a larger slackFactor and a larger CapScale (shrunk less) than the HINGE form (1 knot), exactly as the per-term knot charge predicts.
-- **trees** (dominant `Girth`): YES - the cheaper LINEAR form (0 knots) carries a lower Cost1, a larger slackFactor and a larger CapScale (shrunk less) than the HINGE form (1 knot), exactly as the per-term knot charge predicts.
+- **ozone1** (dominant `temp`): YES - the cheaper LINEAR form (1 term, 0 knots) carries a lower Cost1, a larger slackFactor and a larger CapScale (shrunk less) than the HINGE form (2 terms, 1 knot), as the per-term complexity charge predicts.
+- **trees** (dominant `Girth`): YES - the cheaper LINEAR form (1 term, 0 knots) carries a lower Cost1, a larger slackFactor and a larger CapScale (shrunk less) than the HINGE form (2 terms, 1 knot), as the per-term complexity charge predicts.
 - **mtcars** (dominant `disp`): the dominant predictor's term was NOT saturated in one representation (its cap did not bind at effect.cap=0.5); no divergence is expected there.
 - **etitanic** (dominant `age`): both representations charged the same per-term knot cost (deltaKnots=0); the forced-linear term did not reduce the knot charge here (the predictor's earliest saturated term was already linear), so no divergence is expected.
 
 ## Interpretation
 
 Across the 4 datasets, the cheaper LINEAR representation of the dominant predictor received a strictly larger effect budget and larger CapScale (was shrunk less) than the HINGE representation in 2 of them.
-This is the divergence the explicit per-term knot charge (linear = 0 knots,
-hinge = 1 knot) is designed to produce: a hinge is charged for its extra knot
-through a higher `Cost1`, which lowers `slackFactor` and therefore the effect
-budget, so the same signal is regularised more heavily when expressed as a
-hinge than when forced linear.  Where the dominant predictor's term is not
-saturated in a given representation (the cap does not bind), no divergence is
-expected and the table reports that directly.
+This is the divergence the per-term complexity charge is designed to produce:
+a hinge is charged for its extra term (`deltaTerms = 2` vs `1`) and its extra
+knot (`deltaKnots = 1` vs `0`) through a higher `Cost1`, which lowers
+`slackFactor` and therefore the effect budget, so the same signal is
+regularised more heavily when expressed as a hinge than when forced linear.
+Most of that gap is driven by the per-term term count (which the old averaged
+`(nUsedTerms-1)/2` approximation already carried); the explicit knot charge
+sharpens and widens it rather than creating it on its own.  Where the dominant
+predictor's term is not saturated in a given representation (the cap does not
+bind), no divergence is expected and the table reports that directly.
 
 Whether the extra regularisation helps or hurts OOS generalisation is
 dataset dependent (see the CV RSq columns); ordinary earth remains the
