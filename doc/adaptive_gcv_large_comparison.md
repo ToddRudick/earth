@@ -73,10 +73,10 @@ the ordinary fit and forward-pass companion fits), on this machine:
 
 | dataset | rows | predictors | total elapsed (s) |
 | --- | --- | --- | --- |
-| boston | 506 | 13 | 1.78 |
-| spam | 4601 | 57 | 11.80 |
-| solubility | 951 | 228 | 81.35 |
-| synthetic_large | 4000 | 40 | 22.97 |
+| boston | 506 | 13 | 1.76 |
+| spam | 4601 | 57 | 12.02 |
+| solubility | 951 | 228 | 80.97 |
+| synthetic_large | 4000 | 40 | 22.81 |
 
 Per-fit runtime is in the `elapsed_s` column of each three-way table below.
 Automatic competition adds no meaningful runtime overhead versus ordinary
@@ -91,26 +91,26 @@ wall-clock seconds for the CV fit plus the forward-pass fit.
 
 | dataset | setting | dominant form | in-sample RSq | CV RSq | CV class-rate | nterms | elapsed_s |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| boston | (a) ordinary (adaptive OFF) | hinge | 0.9148 | 0.6926 | NA | 21 | 0.33 |
+| boston | (a) ordinary (adaptive OFF) | hinge | 0.9148 | 0.6926 | NA | 21 | 0.32 |
 | boston | (b) automatic adaptive cap=0.5 | hinge | 0.8985 | 0.7645 | NA | 21 | 0.32 |
 | boston | (b) automatic adaptive cap=0.9 | hinge | 0.913 | 0.7246 | NA | 21 | 0.31 |
-| boston | (c) forced-linpreds cap=0.5 | linear | 0.8904 | 0.8328 | NA | 19 | 0.29 |
+| boston | (c) forced-linpreds cap=0.5 | linear | 0.8904 | 0.8328 | NA | 19 | 0.30 |
 | boston | (c) forced-linpreds cap=0.9 | linear | 0.905 | 0.8414 | NA | 19 | 0.29 |
-| spam | (a) ordinary (adaptive OFF) | absent | 0.6902 | 0.6814 | 0.9252 | 16 | 2.50 |
-| spam | (b) automatic adaptive cap=0.5 | absent | 0.6887 | 0.6801 | 0.9252 | 16 | 2.33 |
-| spam | (b) automatic adaptive cap=0.9 | absent | 0.6901 | 0.6814 | 0.9252 | 16 | 2.27 |
-| spam | (c) forced-linpreds cap=0.5 | absent | 0.6887 | 0.6817 | 0.926 | 16 | 2.17 |
-| spam | (c) forced-linpreds cap=0.9 | absent | 0.6901 | 0.6831 | 0.926 | 16 | 2.18 |
-| solubility | (a) ordinary (adaptive OFF) | hinge | 0.9194 | 0.8692 | NA | 28 | 15.16 |
-| solubility | (b) automatic adaptive cap=0.5 | hinge | 0.9087 | 0.8742 | NA | 28 | 15.08 |
-| solubility | (b) automatic adaptive cap=0.9 | hinge | 0.9182 | 0.8746 | NA | 28 | 15.06 |
-| solubility | (c) forced-linpreds cap=0.5 | linear | 0.9078 | 0.8802 | NA | 28 | 17.87 |
-| solubility | (c) forced-linpreds cap=0.9 | linear | 0.9177 | 0.8813 | NA | 28 | 17.78 |
-| synthetic_large | (a) ordinary (adaptive OFF) | hinge | 0.832 | 0.8589 | NA | 15 | 5.96 |
-| synthetic_large | (b) automatic adaptive cap=0.5 | linear | 0.8251 | 0.8648 | NA | 8 | 4.20 |
-| synthetic_large | (b) automatic adaptive cap=0.9 | hinge | 0.8318 | 0.8583 | NA | 15 | 5.72 |
-| synthetic_large | (c) forced-linpreds cap=0.5 | linear | 0.8251 | 0.8648 | NA | 8 | 3.31 |
-| synthetic_large | (c) forced-linpreds cap=0.9 | linear | 0.8259 | 0.8659 | NA | 8 | 3.34 |
+| spam | (a) ordinary (adaptive OFF) | absent | 0.6902 | 0.6814 | 0.9252 | 16 | 2.51 |
+| spam | (b) automatic adaptive cap=0.5 | absent | 0.6887 | 0.6801 | 0.9252 | 16 | 2.37 |
+| spam | (b) automatic adaptive cap=0.9 | absent | 0.6901 | 0.6814 | 0.9252 | 16 | 2.32 |
+| spam | (c) forced-linpreds cap=0.5 | absent | 0.6887 | 0.6817 | 0.926 | 16 | 2.27 |
+| spam | (c) forced-linpreds cap=0.9 | absent | 0.6901 | 0.6831 | 0.926 | 16 | 2.20 |
+| solubility | (a) ordinary (adaptive OFF) | hinge | 0.9194 | 0.8692 | NA | 28 | 14.99 |
+| solubility | (b) automatic adaptive cap=0.5 | hinge | 0.9087 | 0.8742 | NA | 28 | 15.03 |
+| solubility | (b) automatic adaptive cap=0.9 | hinge | 0.9182 | 0.8746 | NA | 28 | 14.99 |
+| solubility | (c) forced-linpreds cap=0.5 | linear | 0.9078 | 0.8802 | NA | 28 | 17.71 |
+| solubility | (c) forced-linpreds cap=0.9 | linear | 0.9177 | 0.8813 | NA | 28 | 17.84 |
+| synthetic_large | (a) ordinary (adaptive OFF) | hinge | 0.832 | 0.8589 | NA | 15 | 5.93 |
+| synthetic_large | (b) automatic adaptive cap=0.5 | linear | 0.8251 | 0.8648 | NA | 8 | 4.18 |
+| synthetic_large | (b) automatic adaptive cap=0.9 | hinge | 0.8318 | 0.8583 | NA | 15 | 5.58 |
+| synthetic_large | (c) forced-linpreds cap=0.5 | linear | 0.8251 | 0.8648 | NA | 8 | 3.33 |
+| synthetic_large | (c) forced-linpreds cap=0.9 | linear | 0.8259 | 0.8659 | NA | 8 | 3.36 |
 
 ## Per-predictor form counts under automatic competition
 
@@ -126,42 +126,75 @@ Counted across ALL predictors in the forward-pass `$dirs` at effect.cap = 0.5.
 
 ## Stage-2 form verdict per dataset
 
-- **boston** (dominant `lstat`): NO - at effect.cap=0.5 the automatic competition kept `lstat` as a hinge form (the same shape ordinary earth used: hinge); the signal is not preferred as a plain linear term here, so automatic competition does not diverge from stock for this predictor.
+The OOS **HELPS / NEUTRAL / HURTS** label below measures the WHOLE
+`adaptive.gcv = TRUE` path (form competition PLUS the effect cap's per-term
+coefficient shrinkage) against stock earth. It is NOT a form-competition-only
+verdict. For each dataset we also state whether the forward-pass form actually
+CHANGED versus stock: where the form is UNCHANGED, the OOS movement is
+coefficient shrinkage (regularisation), not a form change.
+
+- **boston** (dominant `lstat`) - forward-pass form vs stock: **UNCHANGED (OOS effect is cap shrinkage, not form)**.
+  - Dominant-predictor form verdict: NO - at effect.cap=0.5 the automatic competition kept `lstat` in the same `hinge` form that ordinary earth used (`hinge`); the signal is not preferred as a plain linear term here, so automatic competition does not diverge from stock for this predictor.
   - OOS (earth built-in CV RSq) at effect.cap=0.5: ordinary 0.6926, automatic-adaptive 0.7645 (+0.0719 vs ordinary), forced-linpreds 0.8328 (+0.1402 vs ordinary).
   - Per-predictor form counts under AUTOMATIC competition (effect.cap=0.5), counted across all predictors in the forward-pass `$dirs`: **linear (code 2): 0**, **hinge (+/-1): 9**, **mixed: 0**. For comparison ordinary stock earth used linear: 0, hinge: 9, mixed: 0.
-  - **OOS at scale: automatic form competition HELPS vs ordinary earth.**
-- **spam** (dominant `your`): NO - at effect.cap=0.5 the automatic competition kept `your` as a absent form (the same shape ordinary earth used: absent); the signal is not preferred as a plain linear term here, so automatic competition does not diverge from stock for this predictor.
+  - Attribution: this HELPS label measures the whole adaptive.gcv=TRUE path (form competition + effect-cap coefficient shrinkage), not form competition alone. Here the OOS movement is driven by the effect cap's coefficient SHRINKAGE (the forward-pass form is IDENTICAL to stock earth - same terms, same per-predictor form counts - so the OOS movement is regularisation, NOT a form change).
+  - **OOS at scale: the adaptive.gcv=TRUE path (form + shrinkage) HELPS vs ordinary earth.**
+- **spam** (dominant `your`) - forward-pass form vs stock: **UNCHANGED (OOS effect is cap shrinkage, not form)**.
+  - Dominant-predictor form verdict: N/A - at effect.cap=0.5 the marginally-dominant predictor `your` did NOT enter the forward pass in ANY setting (it is `absent` from ordinary, automatic AND forced fits), so the dominant-predictor form study is Not Applicable for this dataset. The overall three-way OOS comparison and the per-predictor form counts below remain meaningful; only the single-predictor form verdict is vacuous here.
   - OOS (earth built-in CV RSq) at effect.cap=0.5: ordinary 0.6814, automatic-adaptive 0.6801 (-0.001292 vs ordinary), forced-linpreds 0.6817 (+0.0002686 vs ordinary).
   - Per-predictor form counts under AUTOMATIC competition (effect.cap=0.5), counted across all predictors in the forward-pass `$dirs`: **linear (code 2): 0**, **hinge (+/-1): 10**, **mixed: 0**. For comparison ordinary stock earth used linear: 0, hinge: 10, mixed: 0.
-  - **OOS at scale: automatic form competition NEUTRAL vs ordinary earth.**
-- **solubility** (dominant `MolWeight`): NO - at effect.cap=0.5 the automatic competition kept `MolWeight` as a hinge form (the same shape ordinary earth used: hinge); the signal is not preferred as a plain linear term here, so automatic competition does not diverge from stock for this predictor.
+  - Attribution: the adaptive.gcv=TRUE path is NEUTRAL here, and the forward-pass form is IDENTICAL to stock. So neither form competition nor shrinkage moved OOS materially for this dataset.
+  - **OOS at scale: the adaptive.gcv=TRUE path (form + shrinkage) NEUTRAL vs ordinary earth.**
+- **solubility** (dominant `MolWeight`) - forward-pass form vs stock: **UNCHANGED (OOS effect is cap shrinkage, not form)**.
+  - Dominant-predictor form verdict: NO - at effect.cap=0.5 the automatic competition kept `MolWeight` in the same `hinge` form that ordinary earth used (`hinge`); the signal is not preferred as a plain linear term here, so automatic competition does not diverge from stock for this predictor.
   - OOS (earth built-in CV RSq) at effect.cap=0.5: ordinary 0.8692, automatic-adaptive 0.8742 (+0.004934 vs ordinary), forced-linpreds 0.8802 (+0.01098 vs ordinary).
   - Per-predictor form counts under AUTOMATIC competition (effect.cap=0.5), counted across all predictors in the forward-pass `$dirs`: **linear (code 2): 8**, **hinge (+/-1): 11**, **mixed: 0**. For comparison ordinary stock earth used linear: 8, hinge: 11, mixed: 0.
-  - **OOS at scale: automatic form competition NEUTRAL vs ordinary earth.**
-- **synthetic_large** (dominant `x1`): YES - at effect.cap=0.5 the AUTOMATIC competition admitted `x1` as a plain LINEAR term (dirs code 2), on its own, reproducing the Stage-1 forced-linpreds form (pure linear, no knot). Ordinary earth entered it as a hinge.
+  - Attribution: the adaptive.gcv=TRUE path is NEUTRAL here, and the forward-pass form is IDENTICAL to stock. So neither form competition nor shrinkage moved OOS materially for this dataset.
+  - **OOS at scale: the adaptive.gcv=TRUE path (form + shrinkage) NEUTRAL vs ordinary earth.**
+- **synthetic_large** (dominant `x1`) - forward-pass form vs stock: **CHANGED**.
+  - Dominant-predictor form verdict: YES - at effect.cap=0.5 the AUTOMATIC competition admitted `x1` as a plain LINEAR term (dirs code 2), on its own, reproducing the Stage-1 forced-linpreds form (pure linear, no knot). Ordinary earth entered it as `hinge`.
   - OOS (earth built-in CV RSq) at effect.cap=0.5: ordinary 0.8589, automatic-adaptive 0.8648 (+0.005949 vs ordinary), forced-linpreds 0.8648 (+0.005949 vs ordinary).
   - Per-predictor form counts under AUTOMATIC competition (effect.cap=0.5), counted across all predictors in the forward-pass `$dirs`: **linear (code 2): 1**, **hinge (+/-1): 4**, **mixed: 0**. For comparison ordinary stock earth used linear: 0, hinge: 7, mixed: 0.
-  - **OOS at scale: automatic form competition HELPS vs ordinary earth.**
+  - Attribution: this HELPS label measures the whole adaptive.gcv=TRUE path (form competition + effect-cap coefficient shrinkage), not form competition alone. Here the OOS movement is driven by a FORM CHANGE (the automatic competition admitted a different term structure than stock).
+  - **OOS at scale: the adaptive.gcv=TRUE path (form + shrinkage) HELPS vs ordinary earth.**
 
 ## Headline: does automatic form competition help at scale?
 
-Across the 4 larger/wider datasets, at effect.cap = 0.5 the AUTOMATIC hinge-vs-linear competition was **HELPS in 2, NEUTRAL in 2, HURTS in 0** (OOS metric: CV RSq, or CV class-rate for the binary spam dataset; |delta| < 0.005 counted as neutral).
+**Read the label carefully.** The HELPS / NEUTRAL / HURTS classification below
+measures the WHOLE `adaptive.gcv = TRUE` path (hinge-vs-linear form competition
+PLUS the effect cap's per-term coefficient shrinkage) against stock earth. It is
+NOT a form-competition-only metric. To isolate form, we separately report whether
+the forward-pass `$dirs` actually changed versus stock.
+
+Across the 4 larger/wider datasets, at effect.cap = 0.5 the adaptive.gcv=TRUE path was **HELPS in 2, NEUTRAL in 2, HURTS in 0** (OOS metric: CV RSq, or CV class-rate for the binary spam dataset; |delta| < 0.005 counted as neutral).
+
+But the FORM actually changed versus stock in only **1 of 4** datasets. In the other **3**, the automatic path produced a forward-pass `$dirs` IDENTICAL to stock earth (same terms, same per-predictor form counts); for those, any OOS movement is the cap's coefficient SHRINKAGE (regularisation), NOT form competition. So a HELPS or NEUTRAL label on a form-unchanged dataset must NOT be read as evidence that form competition helped.
+
+Where form was UNCHANGED: boston (HELPS), spam (NEUTRAL), solubility (NEUTRAL). Where form CHANGED: synthetic_large (HELPS).
 
 It admitted the dominant predictor as a PURE LINEAR term (reproducing the forced-linpreds form) in 1 dataset(s) and as a MIXED (linpred + retained hinge) form in 0 dataset(s).
 
-On the controlled SYNTHETIC design (n = 4000, p = 40) whose dominant `x1` is genuinely LINEAR by construction, automatic competition entered `x1` as a **linear** form at effect.cap = 0.5, and was **HELPS** OOS versus ordinary earth. This is the cleanest test of the mechanism intent, because we know the true shape.
+On the controlled SYNTHETIC design (n = 4000, p = 40) whose dominant `x1` is genuinely LINEAR by construction, automatic competition entered `x1` as a **linear** form at effect.cap = 0.5, and was **HELPS** OOS versus ordinary earth. This is the cleanest - and the only isolated - test of the mechanism intent, because we know the true shape AND the form genuinely changes here.
+
+**Cap-dependence of the synthetic form flip:** the synthetic HELPS result is specific to effect.cap = 0.5. At effect.cap = 0.9 the same `x1` reverts to a **hinge** form (the competition no longer prefers the linear term) and the OOS gain vanishes (see the synthetic three-way table). So the form change - and its OOS benefit - depends on the cap value, not just on n/p.
 
 ### Interpretation (honest)
 
+- The HELPS / NEUTRAL / HURTS label is a property of the whole adaptive path,
+  which combines form competition and coefficient shrinkage. On these datasets
+  the FORM changed in only the synthetic case; on Boston, spam and solubility
+  the form was identical to stock (3 of 4 datasets form-unchanged), so their
+  OOS movement is regularisation, not form competition.
 - The automatic competition adds negligible runtime at these sizes (see the
   runtime summary); it scales with the CV resampling cost, not the form
   competition itself.
 - Whether it HELPS, is NEUTRAL, or HURTS OOS remains dataset dependent even
-  at larger n / wider p: the tables above report the signed CV deltas
-  directly rather than claiming a universal win. Where the dominant signal
-  is genuinely nonlinear the competition correctly keeps the hinge (a
-  no-difference / neutral case), and where a cheaper linear form is
-  justified it can admit one.
+  at larger n / wider p, AND (for the form change) cap dependent: the tables
+  above report the signed CV deltas directly rather than claiming a universal
+  win. Where the dominant signal is genuinely nonlinear the competition
+  correctly keeps the hinge (a no-difference / neutral case), and where a
+  cheaper linear form is justified it can admit one - but only at a cap
+  aggressive enough to prefer it.
 - Ordinary earth remains the default; `effect.cap >= 1` recovers stock earth
   exactly. This study is diagnostic, not a recommendation to change the
   default.

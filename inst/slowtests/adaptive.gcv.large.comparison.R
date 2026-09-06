@@ -53,6 +53,13 @@
 # combined report doc/adaptive_gcv_large_comparison.md.  Reproducible via fixed
 # seeds.  A SMOKE=TRUE mode (options(adaptive.gcv.smoke=TRUE)) subsamples rows
 # and caps degree so the whole script runs end-to-end in a few seconds.
+#
+# !!! WARNING: SMOKE-mode output must NOT be committed. !!!
+# SMOKE mode OVERWRITES the committed docs IN PLACE with subsampled/degree-capped
+# numbers.  If you run this script with options(adaptive.gcv.smoke=TRUE) to check
+# it executes, discard the resulting doc/*.md changes (e.g. `git checkout -- doc/`)
+# before committing.  Only the FULL run (SMOKE = FALSE, the default) produces the
+# docs that belong in the repository.
 
 suppressWarnings(suppressMessages(library(earth)))
 options(warn = 1)
@@ -271,6 +278,33 @@ run.dataset <- function(name, form, data, degree, dominant,
     cnt.auto <- auto.caps[[key]]$counts
     cnt.off  <- off$counts
 
+    ## -----------------------------------------------------------------------
+    ## FORM-CHANGE detection (issues 1 & 2): decide, PROGRAMMATICALLY, whether
+    ## the AUTOMATIC path actually changed the admitted FORM versus stock, or
+    ## whether the forward-pass structure is identical and any OOS movement is
+    ## the effect cap's coefficient SHRINKAGE alone.  We compare the full
+    ## forward-pass $dirs matrix (term structure) and the per-predictor form
+    ## counts of automatic (b) at EC.FORM against ordinary (a).  Same $dirs =>
+    ## same terms, same form => the ONLY difference between (a) and (b) is the
+    ## per-term coefficient shrinkage applied by the cap, so the honest cause of
+    ## any OOS delta is REGULARISATION, not a form change.
+    ## -----------------------------------------------------------------------
+    same.dirs <- function(fa, fb) {
+        da <- fa$dirs; db <- fb$dirs
+        if (is.null(da) || is.null(db)) return(FALSE)
+        isTRUE(all.equal(dim(da), dim(db))) &&
+            isTRUE(all(dim(da) == dim(db))) &&
+            identical(dimnames(da), dimnames(db)) &&
+            all(da == db)
+    }
+    auto.fp.key <- auto.caps[[key]]$fp
+    form.changed <- !same.dirs(off$fp, auto.fp.key)
+    ## how the driver of the OOS movement should be described
+    cause.phrase <- if (form.changed)
+        "a FORM CHANGE (the automatic competition admitted a different term structure than stock)"
+    else
+        "the effect cap's coefficient SHRINKAGE (the forward-pass form is IDENTICAL to stock earth - same terms, same per-predictor form counts - so the OOS movement is regularisation, NOT a form change)"
+
     ## Stage-2 form-competition verdict at EC.FORM
     a.form <- auto.forms[[key]]
     f.form <- forced.forms[[key]]
@@ -283,20 +317,31 @@ run.dataset <- function(name, form, data, degree, dominant,
     matches.forced   <- auto.pure.linear
     auto.picked.linear <- auto.pure.linear
 
+    dominant.absent <- identical(a.form, "absent") && identical(off.form, "absent")
     verdict <- if (auto.pure.linear)
         sprintf(paste0("YES - at effect.cap=%.2g the AUTOMATIC competition admitted `%s` as a plain LINEAR term ",
                        "(dirs code 2), on its own, reproducing the Stage-1 forced-linpreds form (pure linear, ",
-                       "no knot). Ordinary earth entered it as a %s."),
+                       "no knot). Ordinary earth entered it as `%s`."),
                 EC.FORM, dominant, off.form)
     else if (auto.mixed)
         sprintf(paste0("MIXED - at effect.cap=%.2g the AUTOMATIC competition admitted a LINEAR form (dirs code 2) ",
                        "for `%s` ALONGSIDE a retained hinge on the same predictor, so the fit is a hybrid ",
                        "(linpred + hinge). This is NOT the Stage-1 forced-linpreds form, which is pure linear ",
-                       "(a single linpred, no hinge). Ordinary earth entered it as a %s."),
+                       "(a single linpred, no hinge). Ordinary earth entered it as `%s`."),
                 EC.FORM, dominant, off.form)
+    else if (dominant.absent)
+        ## issue 3: the auto-selected dominant never enters ANY model, so its
+        ## per-predictor form study is Not Applicable - say so explicitly rather
+        ## than emitting a vacuous "kept as absent" verdict.
+        sprintf(paste0("N/A - at effect.cap=%.2g the marginally-dominant predictor `%s` did NOT enter the ",
+                       "forward pass in ANY setting (it is `absent` from ordinary, automatic AND forced fits), ",
+                       "so the dominant-predictor form study is Not Applicable for this dataset. The overall ",
+                       "three-way OOS comparison and the per-predictor form counts below remain meaningful; only ",
+                       "the single-predictor form verdict is vacuous here."),
+                EC.FORM, dominant)
     else
-        sprintf(paste0("NO - at effect.cap=%.2g the automatic competition kept `%s` as a %s form ",
-                       "(the same shape ordinary earth used: %s); the signal is not preferred as a plain ",
+        sprintf(paste0("NO - at effect.cap=%.2g the automatic competition kept `%s` in the same `%s` form ",
+                       "that ordinary earth used (`%s`); the signal is not preferred as a plain ",
                        "linear term here, so automatic competition does not diverge from stock for this predictor."),
                 EC.FORM, dominant, a.form, off.form)
 
@@ -309,10 +354,22 @@ run.dataset <- function(name, form, data, degree, dominant,
     }
 
     ## help / neutral / hurt classification (OOS metric: CV RSq, or class-rate for binary)
+    ## This measures the WHOLE adaptive.gcv=TRUE path (form competition + effect-cap
+    ## coefficient shrinkage), NOT form competition in isolation.  See cause.phrase
+    ## above for whether the movement is a form change or pure shrinkage.
     metric <- function(z) if (is.binary && !is.na(z$cv.class)) z$cv.class else z$cv.rsq
     o.m <- metric(off); a.m <- metric(auto.caps[[key]])
     d.m <- a.m - o.m
     hnh <- if (abs(d.m) < 0.005) "NEUTRAL" else if (d.m > 0) "HELPS" else "HURTS"
+    ## one-line honest attribution sentence per dataset (issues 1 & 2)
+    attrib.note <- if (identical(hnh, "NEUTRAL"))
+        sprintf(paste0("Attribution: the adaptive.gcv=TRUE path is NEUTRAL here, and the forward-pass form is %s. ",
+                       "So neither form competition nor shrinkage moved OOS materially for this dataset."),
+                if (form.changed) "DIFFERENT from stock" else "IDENTICAL to stock")
+    else
+        sprintf(paste0("Attribution: this %s label measures the whole adaptive.gcv=TRUE path (form competition + ",
+                       "effect-cap coefficient shrinkage), not form competition alone. Here the OOS movement is driven by %s."),
+                hnh, cause.phrase)
 
     counts.note <- sprintf(paste0("Per-predictor form counts under AUTOMATIC competition (effect.cap=%.2g), ",
                                   "counted across all predictors in the forward-pass `$dirs`: ",
@@ -340,8 +397,10 @@ run.dataset <- function(name, form, data, degree, dominant,
         sprintf("- Dominant predictor studied: `%s`", dominant),
         sprintf("- OOS engine: earth built-in cross-validation, nfold = %d, ncross = %d, seed %d",
                 NFOLD, NCROSS, SEED),
-        sprintf("- Automatic form competition at effect.cap = %.2g: **%s** OOS vs ordinary earth.",
+        sprintf("- Adaptive path (`adaptive.gcv = TRUE`, no `linpreds`) at effect.cap = %.2g: **%s** OOS vs ordinary earth (this measures form competition AND effect-cap shrinkage combined; see the attribution note below).",
                 EC.FORM, hnh),
+        sprintf("- Forward-pass form vs stock at effect.cap = %.2g: **%s**.",
+                EC.FORM, if (form.changed) "CHANGED" else "UNCHANGED (OOS movement is cap shrinkage, not a form change)"),
         "")
     if (!is.null(extra.md)) md <- c(md, extra.md, "")
     md <- c(md,
@@ -358,8 +417,11 @@ run.dataset <- function(name, form, data, degree, dominant,
         "",
         sprintf("**%s**", counts.note),
         "",
-        sprintf("**OOS verdict at scale (effect.cap = %.2g): automatic form competition %s OOS vs ordinary earth for this dataset.**",
-                EC.FORM, hnh),
+        sprintf("**%s**", attrib.note),
+        "",
+        sprintf("**OOS verdict at scale (effect.cap = %.2g): the adaptive.gcv=TRUE path (form competition + cap shrinkage) %s OOS vs ordinary earth for this dataset. Forward-pass form vs stock: %s.**",
+                EC.FORM, hnh,
+                if (form.changed) "CHANGED" else "UNCHANGED - the OOS movement is coefficient shrinkage from the cap, not a form change"),
         "")
     if (!is.null(caret.res))
         md <- c(md,
@@ -384,6 +446,7 @@ run.dataset <- function(name, form, data, degree, dominant,
          auto.picked.linear = auto.picked.linear,
          matches.forced = matches.forced,
          verdict = verdict, oos.note = oos.note, counts.note = counts.note,
+         attrib.note = attrib.note, form.changed = form.changed,
          cnt.auto = cnt.auto, cnt.off = cnt.off, hnh = hnh,
          o.cv = o.cv, a.cv = a.cv, f.cv = f.cv,
          total.elapsed = total.elapsed,
@@ -450,7 +513,17 @@ spam.extra <- c(
                    "absolute point-biserial correlation with the 0/1 `type` response ",
                    "(|r| = %.3f, where nonspam = 0, spam = 1). It is computed in-script ",
                    "and reported here for reproducibility."),
-            spam.dom$name, spam.dom$cor))
+            spam.dom$name, spam.dom$cor),
+    "",
+    sprintf(paste0("**Caveat (form study N/A for spam):** the marginally-dominant `%s` does NOT ",
+                   "survive earth's degree-1 forward pass - it is `absent` from every fitted model ",
+                   "(ordinary, automatic and forced). Marginal correlation does not guarantee a ",
+                   "predictor enters the model when it competes against 56 others. So the ",
+                   "single-dominant-predictor form study is **Not Applicable** for spam. The overall ",
+                   "three-way OOS comparison (classification metric = CV class-rate) and the ",
+                   "per-predictor form counts across all admitted predictors remain meaningful and ",
+                   "are reported below."),
+            spam.dom$name))
 results[["spam"]] <- run.dataset(
     "spam", type ~ ., spam.df, degree = deg(1L), dominant = spam.dom$name,
     is.binary = TRUE, extra.md = spam.extra)
@@ -682,12 +755,23 @@ for (r in results)
         r$cnt.off[["linear"]], r$cnt.off[["hinge"]], r$cnt.off[["mixed"]]))
 
 ## --- per-dataset verdicts ---
-lines <- c(lines, "", "## Stage-2 form verdict per dataset", "")
+lines <- c(lines, "", "## Stage-2 form verdict per dataset", "",
+    "The OOS **HELPS / NEUTRAL / HURTS** label below measures the WHOLE",
+    "`adaptive.gcv = TRUE` path (form competition PLUS the effect cap's per-term",
+    "coefficient shrinkage) against stock earth. It is NOT a form-competition-only",
+    "verdict. For each dataset we also state whether the forward-pass form actually",
+    "CHANGED versus stock: where the form is UNCHANGED, the OOS movement is",
+    "coefficient shrinkage (regularisation), not a form change.",
+    "")
 for (r in results) {
-    lines <- c(lines, sprintf("- **%s** (dominant `%s`): %s", r$name, r$dominant, r$verdict))
+    lines <- c(lines, sprintf("- **%s** (dominant `%s`) - forward-pass form vs stock: **%s**.",
+        r$name, r$dominant,
+        if (r$form.changed) "CHANGED" else "UNCHANGED (OOS effect is cap shrinkage, not form)"))
+    lines <- c(lines, sprintf("  - Dominant-predictor form verdict: %s", r$verdict))
     lines <- c(lines, sprintf("  - %s", r$oos.note))
     lines <- c(lines, sprintf("  - %s", r$counts.note))
-    lines <- c(lines, sprintf("  - **OOS at scale: automatic form competition %s vs ordinary earth.**", r$hnh))
+    lines <- c(lines, sprintf("  - %s", r$attrib.note))
+    lines <- c(lines, sprintf("  - **OOS at scale: the adaptive.gcv=TRUE path (form + shrinkage) %s vs ordinary earth.**", r$hnh))
 }
 
 ## --- headline interpretation ---
@@ -699,12 +783,38 @@ n.hurts   <- sum(vapply(results, function(r) identical(r$hnh, "HURTS"),   logica
 syn <- results[["synthetic_large"]]
 syn.key.form <- syn$auto.forms[[paste0("cap", EC.FORM)]]
 
+n.form.changed <- sum(vapply(results, function(r) isTRUE(r$form.changed), logical(1)))
+n.form.same    <- length(results) - n.form.changed
+syn.cap09.form <- syn$auto.forms[[paste0("cap", 0.9)]]
+
 lines <- c(lines, "", "## Headline: does automatic form competition help at scale?", "",
-    sprintf(paste0("Across the %d larger/wider datasets, at effect.cap = %.2g the AUTOMATIC ",
-                   "hinge-vs-linear competition was **HELPS in %d, NEUTRAL in %d, HURTS in %d**",
-                   " (OOS metric: CV RSq, or CV class-rate for the binary spam dataset; ",
-                   "|delta| < 0.005 counted as neutral)."),
+    "**Read the label carefully.** The HELPS / NEUTRAL / HURTS classification below",
+    "measures the WHOLE `adaptive.gcv = TRUE` path (hinge-vs-linear form competition",
+    "PLUS the effect cap's per-term coefficient shrinkage) against stock earth. It is",
+    "NOT a form-competition-only metric. To isolate form, we separately report whether",
+    "the forward-pass `$dirs` actually changed versus stock.",
+    "",
+    sprintf(paste0("Across the %d larger/wider datasets, at effect.cap = %.2g the adaptive.gcv=TRUE ",
+                   "path was **HELPS in %d, NEUTRAL in %d, HURTS in %d** (OOS metric: CV RSq, or CV ",
+                   "class-rate for the binary spam dataset; |delta| < 0.005 counted as neutral)."),
             length(results), EC.FORM, n.helps, n.neutral, n.hurts),
+    "",
+    sprintf(paste0("But the FORM actually changed versus stock in only **%d of %d** datasets. In the ",
+                   "other **%d**, the automatic path produced a forward-pass `$dirs` IDENTICAL to stock ",
+                   "earth (same terms, same per-predictor form counts); for those, any OOS movement is ",
+                   "the cap's coefficient SHRINKAGE (regularisation), NOT form competition. So a HELPS ",
+                   "or NEUTRAL label on a form-unchanged dataset must NOT be read as evidence that form ",
+                   "competition helped."),
+            n.form.changed, length(results), n.form.same),
+    "",
+    sprintf(paste0("Where form was UNCHANGED: %s. Where form CHANGED: %s."),
+            paste(vapply(results[vapply(results, function(r) !r$form.changed, logical(1))],
+                         function(r) sprintf("%s (%s)", r$name, r$hnh), ""), collapse = ", "),
+            {
+                ch <- results[vapply(results, function(r) isTRUE(r$form.changed), logical(1))]
+                if (length(ch) == 0) "(none)"
+                else paste(vapply(ch, function(r) sprintf("%s (%s)", r$name, r$hnh), ""), collapse = ", ")
+            }),
     "",
     sprintf(paste0("It admitted the dominant predictor as a PURE LINEAR term (reproducing the ",
                    "forced-linpreds form) in %d dataset(s) and as a MIXED (linpred + retained hinge) ",
@@ -714,20 +824,35 @@ lines <- c(lines, "", "## Headline: does automatic form competition help at scal
     sprintf(paste0("On the controlled SYNTHETIC design (n = %d, p = %d) whose dominant `x1` is ",
                    "genuinely LINEAR by construction, automatic competition entered `x1` as a **%s** ",
                    "form at effect.cap = %.2g, and was **%s** OOS versus ordinary earth. This is the ",
-                   "cleanest test of the mechanism intent, because we know the true shape."),
+                   "cleanest - and the only isolated - test of the mechanism intent, because we know ",
+                   "the true shape AND the form genuinely changes here."),
             syn.n, syn.p, syn.key.form, EC.FORM, syn$hnh),
+    "",
+    sprintf(paste0("**Cap-dependence of the synthetic form flip:** the synthetic HELPS result is ",
+                   "specific to effect.cap = %.2g. At effect.cap = 0.9 the same `x1` reverts to a **%s** ",
+                   "form (the competition no longer prefers the linear term) and the OOS gain vanishes ",
+                   "(see the synthetic three-way table). So the form change - and its OOS benefit - ",
+                   "depends on the cap value, not just on n/p."),
+            EC.FORM, syn.cap09.form),
     "",
     "### Interpretation (honest)",
     "",
+    "- The HELPS / NEUTRAL / HURTS label is a property of the whole adaptive path,",
+    "  which combines form competition and coefficient shrinkage. On these datasets",
+    "  the FORM changed in only the synthetic case; on Boston, spam and solubility",
+    sprintf("  the form was identical to stock (%d of %d datasets form-unchanged), so their",
+            n.form.same, length(results)),
+    "  OOS movement is regularisation, not form competition.",
     "- The automatic competition adds negligible runtime at these sizes (see the",
     "  runtime summary); it scales with the CV resampling cost, not the form",
     "  competition itself.",
     "- Whether it HELPS, is NEUTRAL, or HURTS OOS remains dataset dependent even",
-    "  at larger n / wider p: the tables above report the signed CV deltas",
-    "  directly rather than claiming a universal win. Where the dominant signal",
-    "  is genuinely nonlinear the competition correctly keeps the hinge (a",
-    "  no-difference / neutral case), and where a cheaper linear form is",
-    "  justified it can admit one.",
+    "  at larger n / wider p, AND (for the form change) cap dependent: the tables",
+    "  above report the signed CV deltas directly rather than claiming a universal",
+    "  win. Where the dominant signal is genuinely nonlinear the competition",
+    "  correctly keeps the hinge (a no-difference / neutral case), and where a",
+    "  cheaper linear form is justified it can admit one - but only at a cap",
+    "  aggressive enough to prefer it.",
     "- Ordinary earth remains the default; `effect.cap >= 1` recovers stock earth",
     "  exactly. This study is diagnostic, not a recommendation to change the",
     "  default.",
