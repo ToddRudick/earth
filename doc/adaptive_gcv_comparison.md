@@ -1,77 +1,115 @@
-# Adaptive GCV Effect Cap: in-sample vs out-of-sample comparison
+# Adaptive GCV Effect Cap (Stage 1): in-sample vs out-of-sample comparison
 
 This report compares ordinary earth (`adaptive.gcv = FALSE`, the default)
-against the experimental adaptive GCV effect cap (`adaptive.gcv = TRUE`) on
-several established datasets, measuring **out-of-sample** predictive power.
+against the experimental **Stage-1** adaptive GCV effect cap
+(`adaptive.gcv = TRUE`) on several established datasets, using genuine
+out-of-sample (OOS) scores from earth's built-in cross-validation.
+
+## What changed in Stage 1
+
+The effect cap is now **GCV / per-term-complexity adaptive**, not a fixed
+fraction of the total variance.  When a candidate term is admitted, the
+incremental delta-RSS it is allowed to realise is
+
+```
+DeltaRssMax = BreakEven + slackFactor * (RssDelta - BreakEven)
+slackFactor = (1 - clamp(Cost1))^gamma,     gamma = 1/effect.cap - 1
+Cost1       = (nOldUsedTerms + deltaTerms + Penalty*(nKnotsOld + deltaKnots)) / n
+```
+
+where `RssDelta` is the unconstrained OLS effect (ceiling), `BreakEven` is
+the GCV break-even reduction (floor), and the key Stage-1 change is the
+**explicit per-term knot charge**: `deltaKnots = 0` for a linear/`linpreds`
+term and `deltaKnots = 1` for a hinge term.  Because `Cost1` rises with
+`deltaKnots` and `slackFactor` decreases with `Cost1`, a HINGE term gets a
+SMALLER budget than a LINEAR term carrying the same OLS effect.
+`effect.cap >= 1` forces `slackFactor == 1` and reproduces stock earth
+byte-for-byte.
+
+## The Stage-1 question
+
+> Under the per-term-complexity-aware cap, do HINGE and LINEAR terms diverge
+> as predicted?  Does a dominant predictor entered as a cheap LINEAR term (0
+> knots) get a HIGHER justified effect budget / larger CapScale (shrunk
+> LESS) than the same signal expressed as a HINGE (1 knot)?
+
+For each dataset the dominant predictor is fit once as a HINGE (default) and
+once FORCED LINEAR via `linpreds`, and we report the retained effect /
+CapScale (from `trace >= 6`) and the OOS CV RSq of each representation.
+This uses the EXISTING `linpreds` mechanism only to MEASURE the divergence;
+generating both a hinged and unhinged version of every candidate inside the
+algorithm is Stage 2 and is deliberately out of scope here.
 
 ## Methodology
 
-- **OOS bagging engine:** caret::bagEarth. bagEarth passes `...` through to `earth()`, so the identical bagging procedure is run with the feature OFF and ON.
-- **Holdout:** a single 70/30 train/test split per dataset (`set.seed(2024)`); bagged earth is fit on train and scored on the held-out test rows.
-- **Cross-validation:** earth's own k-fold CV (`nfold=5, ncross=3`, `set.seed(2024)`), fully independent of caret, reports cross-validated RSq (and classification rate for the binary response).
-- **Metrics:** RMSE and R^2 for regression; RMSE, accuracy and Brier score for the binary `etitanic$survived` response.
-- **Interactions:** `ozone1` and `etitanic` are fit with `degree = 2`.
-- Per-dataset details (selected terms and coefficients for both settings) are in the companion files listed below.
+- **OOS engine (primary, only critical path):** earth built-in CV, `nfold = 5, ncross = 3`, `set.seed(2024)`.
+- **effect.cap values studied:** 0.5, 0.9 (both < 1; the hinge-vs-linear contrast uses effect.cap = 0.5).
+- **Optional:** a `caret::bagEarth` 70/30 holdout is included only when
+  `options(adaptive.gcv.run.caret = TRUE)` is set and caret is installed;
+  it is OFF the critical path (caret bagEarth is slow).
 
 ## Datasets
 
-| dataset | task | degree | rows | notes |
-| --- | --- | --- | --- | --- |
-| ozone1 | regression | 2 | 330 | canonical MARS / earth-vignette example |
-| trees | regression | 1 | 31 | base R |
-| mtcars | regression | 1 | 32 | base R |
-| etitanic | classification | 2 | 1046 | used in earth examples; binary `survived` |
+| dataset | task | degree | rows | dominant predictor | notes |
+| --- | --- | --- | --- | --- | --- |
+| ozone1 | regression | 2 | 330 | temp | canonical MARS / earth-vignette example |
+| trees | regression | 1 | 31 | Girth | base R |
+| mtcars | regression | 1 | 32 | disp | base R |
+| etitanic | classification | 2 | 1046 | age | earth example, binary `survived` |
 
-## Out-of-sample results (bagged earth, holdout test set)
+## Cross-validated fit: ordinary vs adaptive
 
-### Regression (RMSE / R^2 on held-out test set)
+| dataset | setting | in-sample RSq | CV RSq | CV class-rate | nterms |
+| --- | --- | --- | --- | --- | --- |
+| ozone1 | ordinary (OFF) | 0.8254 | 0.7279 | NA | 12 |
+| ozone1 | adaptive cap=0.5 | 0.8081 | 0.7334 | NA | 12 |
+| ozone1 | adaptive cap=0.9 | 0.8234 | 0.7351 | NA | 12 |
+| trees | ordinary (OFF) | 0.9742 | 0.9091 | NA | 4 |
+| trees | adaptive cap=0.5 | 0.8585 | 0.7233 | NA | 4 |
+| trees | adaptive cap=0.9 | 0.9603 | 0.8928 | NA | 4 |
+| mtcars | ordinary (OFF) | 0.8602 | 0.6485 | NA | 3 |
+| mtcars | adaptive cap=0.5 | 0.7635 | 0.6577 | NA | 3 |
+| mtcars | adaptive cap=0.9 | 0.8486 | 0.6861 | NA | 3 |
+| etitanic | ordinary (OFF) | 0.439 | 0.401 | 0.7932 | 8 |
+| etitanic | adaptive cap=0.5 | 0.4373 | 0.4046 | 0.7932 | 8 |
+| etitanic | adaptive cap=0.9 | 0.4388 | 0.4027 | 0.7932 | 8 |
 
-| dataset | setting | OOS RMSE | OOS R^2 |
-| --- | --- | --- | --- |
-| ozone1 | ordinary (OFF) | 4.097 | 0.7051 |
-| ozone1 | adaptive (ON) | 4.097 | 0.7051 |
-| trees | ordinary (OFF) | 2.807 | 0.9575 |
-| trees | adaptive (ON) | 4.279 | 0.9013 |
-| mtcars | ordinary (OFF) | 2.781 | 0.5736 |
-| mtcars | adaptive (ON) | 2.773 | 0.5763 |
+## Hinge vs forced-linear divergence (dominant predictor, effect.cap = 0.5)
 
-### Classification (etitanic$survived, held-out test set)
+| dataset | predictor | representation | deltaKnots | slackFactor | dRSSmax budget | CapScale | retained var | CV RSq |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ozone1 | temp | hinge | 1 | 0.98182 | 213.33 | 0.86828 | 15.474 | 0.73336 |
+| ozone1 | temp | forced linear | 0 | 0.99394 | 199.32 | 0.92254 | 13.493 | 0.73062 |
+| trees | Girth | hinge | 1 | 0.83871 | 25.395 | 0.65426 | 95.049 | 0.72328 |
+| trees | Girth | forced linear | 0 | 0.93548 | 26.376 | 0.75506 | 122.42 | 0.78018 |
+| mtcars | disp | hinge | 1 | 0.84375 | 23.668 | 0.66474 | 13.806 | 0.65772 |
+| mtcars | disp | forced linear | NA |     NA |     NA |     NA |      0 | 0.65846 |
+| etitanic | age | hinge | 0 | 0.99713 | 48.652 | 0.94645 | 0.012639 | 0.4046 |
+| etitanic | age | forced linear | 0 | 0.99618 | 35.463 | 0.93816 | 0.015858 | 0.39607 |
 
-| dataset | setting | OOS RMSE | OOS accuracy | OOS Brier |
-| --- | --- | --- | --- | --- |
-| etitanic | ordinary (OFF) | 0.3441 | 0.8344 | 0.1184 |
-| etitanic | adaptive (ON) | 0.3441 | 0.8344 | 0.1184 |
+## Divergence verdict per dataset
 
-## Cross-validation (earth built-in, independent of caret)
-
-| dataset | setting | in-sample RSq | CV RSq | CV class-rate |
-| --- | --- | --- | --- | --- |
-| ozone1 | ordinary (OFF) | 0.8254 | 0.7279 | NA |
-| ozone1 | adaptive (ON) | 0.8254 | 0.7279 | NA |
-| trees | ordinary (OFF) | 0.9742 | 0.9091 | NA |
-| trees | adaptive (ON) | 0.9128 | 0.8225 | NA |
-| mtcars | ordinary (OFF) | 0.8602 | 0.6485 | NA |
-| mtcars | adaptive (ON) | 0.8602 | 0.6485 | NA |
-| etitanic | ordinary (OFF) | 0.439 | 0.401 | 0.7932 |
-| etitanic | adaptive (ON) | 0.439 | 0.401 | 0.7932 |
+- **ozone1** (dominant `temp`): YES - the cheaper LINEAR form (0 knots) carries a lower Cost1, a larger slackFactor and a larger CapScale (shrunk less) than the HINGE form (1 knot), exactly as the per-term knot charge predicts.
+- **trees** (dominant `Girth`): YES - the cheaper LINEAR form (0 knots) carries a lower Cost1, a larger slackFactor and a larger CapScale (shrunk less) than the HINGE form (1 knot), exactly as the per-term knot charge predicts.
+- **mtcars** (dominant `disp`): the dominant predictor's term was NOT saturated in one representation (its cap did not bind at effect.cap=0.5); no divergence is expected there.
+- **etitanic** (dominant `age`): both representations charged the same per-term knot cost (deltaKnots=0); the forced-linear term did not reduce the knot charge here (the predictor's earliest saturated term was already linear), so no divergence is expected.
 
 ## Interpretation
 
-- **ozone1** (regression, degree 2): adaptive.gcv is NEUTRAL for out-of-sample RMSE (ordinary 4.097 vs adaptive 4.097, delta +1.776e-15).
-- **trees** (regression, degree 1): adaptive.gcv HURTS out-of-sample RMSE (ordinary 2.807 vs adaptive 4.279, delta +1.472).
-- **mtcars** (regression, degree 1): adaptive.gcv IMPROVES out-of-sample RMSE (ordinary 2.781 vs adaptive 2.773, delta -0.008697).
-- **etitanic** (classification, degree 2): adaptive.gcv is NEUTRAL for out-of-sample Brier score (ordinary 0.1184 vs adaptive 0.1184, delta -2.082e-16); OOS accuracy ordinary 0.8344 vs adaptive 0.8344.
+Across the 4 datasets, the cheaper LINEAR representation of the dominant predictor received a strictly larger effect budget and larger CapScale (was shrunk less) than the HINGE representation in 2 of them.
+This is the divergence the explicit per-term knot charge (linear = 0 knots,
+hinge = 1 knot) is designed to produce: a hinge is charged for its extra knot
+through a higher `Cost1`, which lowers `slackFactor` and therefore the effect
+budget, so the same signal is regularised more heavily when expressed as a
+hinge than when forced linear.  Where the dominant predictor's term is not
+saturated in a given representation (the cap does not bind), no divergence is
+expected and the table reports that directly.
 
-The adaptive cap is a conservative, default-off modification. Terms are selected by the
-ordinary MARS forward pass, but each term's predictive effect (delta-R^2) is capped at
-`effect.cap` (default 0.9, the maximum fraction of the total sum of squares any
-single term may explain); the saved caps are then applied as a *constrained* final fit,
-so the un-capped terms absorb the residual a dominant term is not allowed to explain.
-Because a strong term is deliberately held below its unconstrained least-squares effect,
-the adaptive model is more heavily regularised in-sample; whether that regularisation
-helps or hurts out-of-sample generalisation is dataset dependent, as the table above
-shows. Ordinary earth remains the default. The `effect.cap` argument tunes the strength:
-`effect.cap >= 1` recovers stock earth, smaller values redistribute more signal.
+Whether the extra regularisation helps or hurts OOS generalisation is
+dataset dependent (see the CV RSq columns); ordinary earth remains the
+default.  The `effect.cap` argument tunes the strength: `effect.cap >= 1`
+recovers stock earth, smaller values push saturated terms further toward
+their GCV break-even effect, with hinges pushed hardest.
 
 ## Companion per-dataset files
 

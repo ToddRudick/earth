@@ -1,61 +1,43 @@
-# Adaptive GCV effect cap: ozone1
+# Adaptive GCV effect cap (Stage 1): ozone1
 
 - Response formula: `O3 ~ .`
-- Rows: 330 (train 231 / test 99, 70/30 holdout, seed 2024)
+- Rows: 330
 - earth `degree` = 2
 - Task type: regression
-- OOS bagging engine: caret::bagEarth (B = 30)
-- earth built-in CV: nfold = 5, ncross = 3
+- Dominant predictor studied (hinge vs forced linear): `temp`
+- OOS engine: earth built-in cross-validation, nfold = 5, ncross = 3, seed 2024
 
-## Out-of-sample: bagged earth (ordinary vs adaptive)
+## Stage-1 cap semantics
 
-| setting | oos_rmse | oos_r2 |
-| --- | --- | --- |
-| ordinary (OFF) | 4.097401 | 0.7050523 |
-| adaptive (ON) | 4.097401 | 0.7050523 |
+The cap is GCV / per-term-complexity adaptive (not a fixed fraction of
+variance).  A term's realised delta-RSS is limited to
+`DeltaRssMax = BreakEven + slackFactor*(RssDelta - BreakEven)` where
+`slackFactor = (1 - clamp(Cost1))^(1/effect.cap - 1)` and `Cost1` uses an
+EXPLICIT per-term knot charge (0 knots for a linear/linpreds term, 1 knot
+for a hinge term).  `effect.cap >= 1` reproduces stock earth exactly.
 
-## Cross-validation (earth built-in, independent of caret)
+## Ordinary vs adaptive: in-sample and cross-validated fit
 
-| setting | insample_rsq | cv_rsq | cv_class_rate |
-| --- | --- | --- | --- |
-| ordinary (OFF) | 0.8253857 | 0.7279271 | NA |
-| adaptive (ON) | 0.8253857 | 0.7279271 | NA |
+| setting | insample_rsq | cv_rsq | cv_classrate | nterms |
+| --- | --- | --- | --- | --- |
+| ordinary (OFF) | 0.8253857 | 0.7279271 | NA | 12 |
+| adaptive cap=0.5 | 0.8081294 | 0.7333624 | NA | 12 |
+| adaptive cap=0.9 | 0.8234371 | 0.7350913 | NA | 12 |
 
-## Selected terms and coefficients (single model on full data)
+## Hinge vs forced-linear contrast for `temp` (effect.cap = 0.5)
 
-### ordinary earth (adaptive.gcv = FALSE)
-Selected 12 of 21 terms; in-sample RSq = 0.8254, GCV = 13.385
+For the dominant predictor we compare its natural HINGE representation
+against the SAME predictor FORCED LINEAR via `linpreds`.  `deltaKnots`,
+`Cost1`, `slackFactor`, the effect budget `dRSSmax`, and the applied
+`CapScale` are read from the `trace >= 6` cap diagnostics for the
+predictor's earliest saturated term; `retained_var` is the variance of
+the fitted contribution attributable to the predictor; `cv_rsq` is the
+earth built-in CV RSq of the whole model under each representation.
 
-| term | coefficient |
-|------|-------------|
-| `(Intercept)` | 13.3286 |
-| `h(temp-58)` | 0.372287 |
-| `h(55-humidity)*h(temp-58)` | -0.0222206 |
-| `h(doy-96)` | -0.0242853 |
-| `h(96-doy)` | -0.123676 |
-| `h(temp-58)*h(dpg-52)` | -0.0168976 |
-| `h(temp-58)*h(52-dpg)` | 0.00408711 |
-| `h(200-vis)` | 0.0221773 |
-| `h(wind-7)*h(200-vis)` | -0.0181059 |
-| `h(194-ibt)` | -0.0459797 |
-| `h(1105-ibh)*h(21-dpg)` | -0.000102969 |
-| `h(5740-vh)*h(temp-58)` | -0.00863238 |
+| representation | deltaKnots | Cost1 | slackFactor | dRSSmax_budget | CapScale | retained_var | cv_rsq |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| hinge | 1 | 0.0181820 | 0.98182 | 213.33 | 0.86828 | 15.47426 | 0.7333624 |
+| forced linear | 0 | 0.0060606 | 0.99394 | 199.32 | 0.92254 | 13.49262 | 0.7306245 |
 
-### adaptive earth (adaptive.gcv = TRUE)
-Selected 12 of 21 terms; in-sample RSq = 0.8254, GCV = 13.385
-
-| term | coefficient |
-|------|-------------|
-| `(Intercept)` | 13.3286 |
-| `h(temp-58)` | 0.372287 |
-| `h(55-humidity)*h(temp-58)` | -0.0222206 |
-| `h(doy-96)` | -0.0242853 |
-| `h(96-doy)` | -0.123676 |
-| `h(temp-58)*h(dpg-52)` | -0.0168976 |
-| `h(temp-58)*h(52-dpg)` | 0.00408711 |
-| `h(200-vis)` | 0.0221773 |
-| `h(wind-7)*h(200-vis)` | -0.0181059 |
-| `h(194-ibt)` | -0.0459797 |
-| `h(1105-ibh)*h(21-dpg)` | -0.000102969 |
-| `h(5740-vh)*h(temp-58)` | -0.00863238 |
+**Divergence verdict: YES - the cheaper LINEAR form (0 knots) carries a lower Cost1, a larger slackFactor and a larger CapScale (shrunk less) than the HINGE form (1 knot), exactly as the per-term knot charge predicts.**
 

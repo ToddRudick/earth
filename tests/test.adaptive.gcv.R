@@ -1,26 +1,81 @@
 # test.adaptive.gcv.R
 #
-# Validation suite for the experimental adaptive.gcv effect cap (FEAT-003).
+# Validation suite for the experimental adaptive.gcv effect cap.
 #
-# Implements the six synthetic scenarios from adaptive_gcv_effect_cap_coding_agent.md
-# ("Validation plan") plus a hard regression check that adaptive.gcv=FALSE is
-# numerically identical to stock earth (spec "Important behavior to verify" Q8).
+# STAGE 1 (FEAT-004): the effect cap is now GCV / per-term-complexity ADAPTIVE.
+# It is no longer a fixed fraction of the total variance.  The budget for the
+# incremental delta-RSS a newly admitted term may realise is
 #
-# Each scenario fits ordinary earth (adaptive.gcv=FALSE) and adaptive earth
-# (adaptive.gcv=TRUE), prints a compact comparison, and asserts the intended
-# qualitative outcome with stopifnot() where an exact expectation exists.
+#   DeltaRssMax = BreakEven + slackFactor * (RssDelta - BreakEven)
+#
+# where BreakEven is the GCV break-even reduction computed with an EXPLICIT
+# per-term knot charge (deltaKnots = 0 for a linear/linpreds term, deltaKnots =
+# 1 for a hinge term), RssDelta is the unconstrained OLS effect (ceiling), and
+# slackFactor = (1 - clamp(Cost1))^gamma with gamma = 1/effect.cap - 1 and
+# Cost1 = (nOldUsedTerms + deltaTerms + Penalty*(nKnotsOld + deltaKnots))/nCases.
+# effect.cap >= 1 (or adaptive.gcv = FALSE) forces slackFactor = 1 =>
+# DeltaRssMax = RssDelta => CapScale = 1 => byte-for-byte stock earth.
+#
+# The Stage-1 hypothesis this suite must pin down: for effect.cap < 1 a HINGE
+# term (1 knot, higher Cost1) gets a SMALLER budget / CapScale than a LINEAR
+# term (0 knots, lower Cost1) carrying the same OLS effect, so the linear form
+# is shrunk LESS.  This is form-aware: it FAILS if the per-term knot charge is
+# reverted to the model-wide averaged (nUsedTerms-1)/2 approximation.
+#
+# This file implements the six synthetic scenarios from
+# adaptive_gcv_effect_cap_coding_agent.md ("Validation plan") plus hard
+# invariant checks (adaptive.gcv=FALSE and effect.cap>=1 both == stock earth)
+# and the hinge-vs-linear divergence scenario.  Each scenario asserts the
+# intended qualitative outcome with stopifnot().  There is deliberately NO
+# committed .Rout.save: the suite is self-checking.
 #
 # Mechanism (see man/earth.Rd and src/earth.c): the forward pass admits terms
-# exactly as stock earth, but SAVES a per-term effect cap and applies it as a
-# CONSTRAINED final fit (lm.fit of the pruned basis to the capped forward fit).
-# The cap limits any single term's incremental delta-R^2 to effect.cap (a
-# fraction of the total sum of squares); the un-capped terms then absorb the
-# residual a dominant term is not allowed to explain.  effect.cap>=1 or
-# adaptive.gcv=FALSE reproduces stock earth.
+# exactly as stock earth, but SAVES the per-term capped contribution and applies
+# it as a CONSTRAINED final fit (lm.fit of the pruned basis to the capped
+# forward fit yHatCap).  Term SELECTION is unchanged; only the realised effect
+# of a saturated term is held below its unconstrained OLS effect, so the
+# un-capped terms absorb the residual a dominant term is not allowed to explain.
 
 library(earth)
 options(digits = 4)
 cat("=== test.adaptive.gcv.R ===\n")
+
+# ----------------------------------------------------------------------------
+# Helper: extract the per-term cap diagnostics from a trace>=6 fit.
+# Returns a data.frame with one row per admitted term (from the "effectcap CAP"
+# and "effectcap diag" lines emitted by ForwardPass in src/earth.c).  The CAP
+# line is only printed when a term is actually saturated (RssDelta > DeltaRssMax)
+# and can be prefixed by other trace output on the same line, so we grep for the
+# marker substring and parse the numeric fields by name.
+# ----------------------------------------------------------------------------
+parse.field <- function(line, key) {
+    # match "<key> <number>" allowing scientific notation and sign
+    m <- regmatches(line, regexpr(
+        paste0(key, "\\s+[-+0-9.eE]+"), line))
+    if (length(m) == 0) return(NA_real_)
+    as.numeric(sub(paste0("^", key, "\\s+"), "", m))
+}
+
+cap.diag <- function(..., effect.cap = 0.5) {
+    out <- capture.output(fit <- earth(..., adaptive.gcv = TRUE,
+                                       effect.cap = effect.cap, trace = 6))
+    cap.lines <- grep("effectcap CAP:", out, value = TRUE)
+    # split each concatenated line at the marker so leading trace text is dropped
+    cap.lines <- sub(".*effectcap CAP:", "effectcap CAP:", cap.lines)
+    if (length(cap.lines) == 0)
+        return(list(fit = fit, cap = data.frame()))
+    df <- data.frame(
+        iTerm      = as.integer(sapply(cap.lines, parse.field, key = "iTerm")),
+        dRSSols    = sapply(cap.lines, parse.field, key = "dRSS\\(ols\\)"),
+        dRSSmax    = sapply(cap.lines, parse.field, key = "dRSSmax"),
+        scale      = sapply(cap.lines, parse.field, key = "scale"),
+        deltaKnots = as.integer(sapply(cap.lines, parse.field, key = "deltaKnots")),
+        Cost1      = sapply(cap.lines, parse.field, key = "Cost1"),
+        BreakEven  = sapply(cap.lines, parse.field, key = "BreakEven"),
+        slackFactor= sapply(cap.lines, parse.field, key = "slackFactor"),
+        row.names  = NULL, stringsAsFactors = FALSE)
+    list(fit = fit, cap = df)
+}
 
 # helper: predictors actually used by a model (excludes the intercept)
 used.preds <- function(m) {
@@ -35,9 +90,12 @@ nterms <- function(m) length(m$selected.terms)
 insample.rsq <- function(m) m$rsq
 
 # ----------------------------------------------------------------------------
-# Scenario 0 (hard requirement, spec Q8): adaptive.gcv=FALSE == stock earth.
+# Scenario 0 (hard requirement, spec Q8): adaptive.gcv=FALSE == stock earth,
+# AND adaptive.gcv=TRUE with effect.cap>=1 == stock earth (the cap can never
+# bind under the new adaptive formula: gamma<=0 => slackFactor==1 =>
+# DeltaRssMax==RssDelta => CapScale==1).
 # ----------------------------------------------------------------------------
-cat("\n--- Scenario 0: adaptive.gcv=FALSE is byte-for-byte stock earth ---\n")
+cat("\n--- Scenario 0: stock-earth invariants (OFF, and ON with effect.cap>=1) ---\n")
 
 data(trees)
 m.stock <- earth(Volume ~ ., data = trees)
@@ -51,6 +109,18 @@ stopifnot(is.null(m.stock$adaptive.gcv))
 stopifnot(is.null(m.off$adaptive.gcv))
 cat("trees: adaptive.gcv=FALSE identical to omitting the argument: PASS\n")
 
+# adaptive.gcv=TRUE with effect.cap>=1 must ALSO be byte-for-byte stock earth
+# (the adaptive budget's early fast-path forces DeltaRssMax==RssDelta).
+m.cap15 <- earth(Volume ~ ., data = trees, adaptive.gcv = TRUE, effect.cap = 1.5)
+m.cap1  <- earth(Volume ~ ., data = trees, adaptive.gcv = TRUE, effect.cap = 1)
+stopifnot(isTRUE(all.equal(unname(m.stock$coefficients),
+                           unname(m.cap15$coefficients), tol = 1e-9)))
+stopifnot(isTRUE(all.equal(m.stock$rss, m.cap15$rss, tol = 1e-9)))
+stopifnot(isTRUE(all.equal(m.stock$gcv, m.cap15$gcv, tol = 1e-9)))
+stopifnot(isTRUE(all.equal(unname(m.stock$coefficients),
+                           unname(m.cap1$coefficients), tol = 1e-9)))
+cat("trees: adaptive.gcv=TRUE + effect.cap>=1 identical to stock earth: PASS\n")
+
 # also verify on a synthetic frame
 set.seed(2020)
 n <- 200
@@ -63,6 +133,13 @@ stopifnot(isTRUE(all.equal(s.stock$coefficients, s.off$coefficients)))
 stopifnot(isTRUE(all.equal(s.stock$rss, s.off$rss)))
 stopifnot(isTRUE(all.equal(s.stock$gcv, s.off$gcv)))
 cat("synthetic: adaptive.gcv=FALSE identical to omitting the argument: PASS\n")
+
+# synthetic frame: effect.cap>=1 with adaptive.gcv=TRUE must also match stock
+s.cap15 <- earth(y ~ ., data = ds, degree = 1, adaptive.gcv = TRUE, effect.cap = 1.5)
+stopifnot(isTRUE(all.equal(unname(s.stock$coefficients),
+                           unname(s.cap15$coefficients), tol = 1e-9)))
+stopifnot(isTRUE(all.equal(s.stock$rss, s.cap15$rss, tol = 1e-9)))
+cat("synthetic: adaptive.gcv=TRUE + effect.cap>=1 identical to stock earth: PASS\n")
 
 # with adaptive.gcv=TRUE the flag must be present
 s.on <- earth(y ~ ., data = ds, degree = 1, adaptive.gcv = TRUE)
@@ -248,5 +325,77 @@ stopifnot(inherits(try(earth(Volume ~ ., data = trees, adaptive.gcv = TRUE,
 stopifnot(inherits(try(earth(Volume ~ ., data = trees, adaptive.gcv = TRUE,
                               effect.cap = 0), silent = TRUE), "try-error"))
 cat("invalid effect.cap is rejected: PASS\n")
+
+# ----------------------------------------------------------------------------
+# Scenario 8 (CORE STAGE-1 hypothesis): hinge vs linear per-term knot charge.
+#
+# Construct data with a DOMINANT, essentially linear predictor x1 plus a weaker
+# secondary predictor x2.  Fit the adaptive cap (effect.cap<1) TWICE:
+#   (a) x1 free to enter as a HINGE (default), and
+#   (b) x1 FORCED LINEAR via linpreds.
+# The per-term knot charge is deltaKnots=1 for the hinge and deltaKnots=0 for
+# the linear form.  Because Cost1 rises with deltaKnots and slackFactor =
+# (1-clamp(Cost1))^gamma DECREASES with Cost1, the linear form must receive a
+# LARGER budget (DeltaRssMax) and a LARGER CapScale on x1's dominant term, i.e.
+# it is shrunk LESS.  This assertion FAILS if the per-term knot charge is
+# reverted to the model-wide averaged (nUsedTerms-1)/2 approximation, which is
+# form-blind (same charge for hinge and linear).
+# ----------------------------------------------------------------------------
+cat("\n--- Scenario 8: hinge vs linear per-term knot charge (Stage-1 core) ---\n")
+set.seed(101)
+n  <- 60
+x1 <- runif(n, 0, 10)                 # dominant, linear signal
+x2 <- runif(n, 0, 10)                 # weaker, hinge-shaped secondary signal
+y  <- 3 * x1 + 0.5 * pmax(0, x2 - 5) + rnorm(n, sd = 0.5)
+d8 <- data.frame(x1, x2, y)
+
+res.hinge <- cap.diag(y ~ ., data = d8, degree = 1, effect.cap = 0.5)
+res.lin   <- cap.diag(y ~ ., data = d8, degree = 1, effect.cap = 0.5,
+                      linpreds = "x1")
+
+# The dominant predictor is the FIRST admitted term (iTerm 1) in both fits.
+cap.h <- res.hinge$cap
+cap.l <- res.lin$cap
+stopifnot(nrow(cap.h) >= 1L, nrow(cap.l) >= 1L)
+row.h <- cap.h[cap.h$iTerm == 1L, ][1, ]
+row.l <- cap.l[cap.l$iTerm == 1L, ][1, ]
+stopifnot(!is.na(row.h$scale), !is.na(row.l$scale))
+
+cat(sprintf("x1 as HINGE : deltaKnots %d  Cost1 %.5g  slackFactor %.5g  dRSSmax %.5g  CapScale %.5g\n",
+            row.h$deltaKnots, row.h$Cost1, row.h$slackFactor, row.h$dRSSmax, row.h$scale))
+cat(sprintf("x1 as LINEAR: deltaKnots %d  Cost1 %.5g  slackFactor %.5g  dRSSmax %.5g  CapScale %.5g\n",
+            row.l$deltaKnots, row.l$Cost1, row.l$slackFactor, row.l$dRSSmax, row.l$scale))
+
+# per-term knot charge: hinge charges 1 knot, forced-linear charges 0
+stopifnot(row.h$deltaKnots == 1L)
+stopifnot(row.l$deltaKnots == 0L)
+# the cheaper (linear, 0-knot) form must carry a LOWER complexity cost, a
+# LARGER slack, a LARGER effect budget, and be shrunk LESS than the hinge form
+stopifnot(row.l$Cost1       <  row.h$Cost1)
+stopifnot(row.l$slackFactor >  row.h$slackFactor)
+stopifnot(row.l$dRSSmax     >  row.h$dRSSmax)
+stopifnot(row.l$scale       >  row.h$scale)
+cat("linear (0-knot) x1 gets larger budget/CapScale than hinge (1-knot) x1: PASS\n")
+
+# Cross-check the divergence via the retained effect on x1 in the fitted model:
+# the forced-linear representation should retain MORE of x1's variance than the
+# hinge representation once each is shrunk by its own CapScale.
+eff.on.x1 <- function(fit) {
+    # variance of the fitted contribution attributable to the x1 terms
+    bx <- fit$bx
+    keep <- fit$selected.terms
+    nm   <- rownames(fit$dirs)[keep]
+    dirs <- fit$dirs[keep, , drop = FALSE]
+    x1col <- which(colnames(dirs) == "x1")
+    uses.x1 <- dirs[, x1col] != 0
+    co <- fit$coefficients[, 1]
+    contrib <- bx[, uses.x1, drop = FALSE] %*% co[uses.x1]
+    var(as.numeric(contrib))
+}
+v.h <- eff.on.x1(res.hinge$fit)
+v.l <- eff.on.x1(res.lin$fit)
+cat(sprintf("retained var of x1 contribution: hinge %.5g  linear %.5g\n", v.h, v.l))
+stopifnot(v.l > v.h)
+cat("forced-linear x1 retains more effect than hinge x1 under the cap: PASS\n")
 
 cat("\n=== all test.adaptive.gcv.R assertions passed ===\n")

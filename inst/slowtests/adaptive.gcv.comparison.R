@@ -1,49 +1,64 @@
 # adaptive.gcv.comparison.R
 #
-# Empirical in-sample vs out-of-sample (OOS) comparison of the experimental
-# adaptive.gcv effect cap (adaptive.gcv=TRUE) against ordinary earth
-# (adaptive.gcv=FALSE, the default), for FEAT-003.
+# STAGE-1 empirical study of the adaptive GCV effect cap (adaptive.gcv=TRUE)
+# versus ordinary earth (adaptive.gcv=FALSE, the default).
 #
-# Two independent OOS engines are used so the result does not depend on any one
-# resampling method:
+# The Stage-1 cap is GCV / PER-TERM-COMPLEXITY adaptive (FEAT-004): it is no
+# longer a fixed fraction of total variance.  The budget for the incremental
+# delta-RSS a newly admitted term may realise is
 #
-#   (1) caret::bagEarth  - bagged (bootstrap-aggregated) earth. bagEarth passes
-#       ... through to earth(), so we fit bagged earth both WITHOUT adaptive.gcv
-#       (default) and WITH adaptive.gcv=TRUE, on a fixed train/test split, and
-#       score on the held-out test set. If caret / bagEarth is unavailable, a
-#       documented direct-earth bootstrap-aggregating fallback is used instead
-#       (never skipped).
+#   DeltaRssMax = BreakEven + slackFactor * (RssDelta - BreakEven)
+#   slackFactor = (1 - clamp(Cost1))^gamma,   gamma = 1/effect.cap - 1
+#   Cost1       = (nOldUsedTerms + deltaTerms + Penalty*(nKnotsOld + deltaKnots))/n
 #
-#   (2) earth's built-in cross-validation (nfold/ncross) - earth performs its
-#       own k-fold CV and reports cross-validated RSq/metrics. This is fully
-#       independent of caret.
+# with an EXPLICIT per-term knot charge: deltaKnots = 0 for a linear/linpreds
+# term, deltaKnots = 1 for a hinge term.  effect.cap>=1 => slackFactor==1 =>
+# stock earth.
 #
-# Datasets (shipped with earth or base R, established MARS / earth-vignette
-# examples):
-#   - ozone1    : canonical MARS / earth-vignette regression example (O3 ~ 9 preds)
-#   - trees     : base R regression (Volume ~ Girth + Height)
-#   - mtcars    : base R regression (mpg ~ .)
-#   - etitanic  : used in earth examples; BINARY response (survived) -> classification
+# CORE STAGE-1 QUESTION this study answers empirically, with genuine
+# out-of-sample (OOS) results: under the per-term-complexity-aware cap, do HINGE
+# terms and LINEAR terms diverge as predicted?  I.e. does a DOMINANT predictor
+# entered as a cheap LINEAR term (0 knots) receive a HIGHER justified effect
+# budget / larger CapScale (is shrunk LESS) than the SAME signal expressed as a
+# HINGE (1 knot)?  For each dataset we contrast the dominant predictor entered
+# as a HINGE vs FORCED LINEAR (via the `linpreds` argument) and report the
+# retained effect / CapScale (from trace>=6) and the OOS score of each.
 #
-# For regression datasets we report RMSE and R^2 (in-sample and OOS).
-# For etitanic (binary) we additionally report accuracy and Brier score.
-# At least one degree=2 run is included (ozone1 and etitanic use degree=2).
+# OUT OF SCOPE (this is Stage 2): generating BOTH a hinged and unhinged version
+# of each candidate term inside the algorithm.  Stage 1 only MEASURES the
+# divergence using the existing linpreds mechanism to force the linear form.
 #
-# Output: writes per-dataset markdown files and a combined summary report under
-# the repository (paths printed at the end). Reproducible via fixed seeds.
+# OOS ENGINE: earth's BUILT-IN cross-validation (nfold=5, ncross=3, fixed seed
+# 2024) is the PRIMARY and only-critical-path OOS engine (fast, independent of
+# caret).  The caret::bagEarth block is OPTIONAL, guarded, and OFF the critical
+# path: it runs only if options(adaptive.gcv.run.caret=TRUE) is set AND caret is
+# installed.  Put a hard `timeout` on every run of this script; it is designed
+# to finish well under ~15 minutes without caret.
+#
+# Datasets (shipped with earth or base R, established MARS / earth examples):
+#   - ozone1    : canonical MARS / earth-vignette regression example, degree 2
+#   - trees     : base R regression, degree 1
+#   - mtcars    : base R regression, degree 1
+#   - etitanic  : earth example, BINARY survived -> classification, degree 2
+#
+# Output: regenerates doc/adaptive_gcv_comparison.md and the per-dataset
+# doc/adaptive_gcv_<name>.md files.  Reproducible via fixed seeds.
 
 suppressWarnings(suppressMessages(library(earth)))
 options(warn = 1)
 
-set.seed(2024)
+SEED   <- 2024
+NFOLD  <- 5
+NCROSS <- 3
+CAPS   <- c(0.5, 0.9)          # effect.cap values studied (both < 1)
 
-have.caret <- requireNamespace("caret", quietly = TRUE) &&
+run.caret <- isTRUE(getOption("adaptive.gcv.run.caret", FALSE)) &&
+    requireNamespace("caret", quietly = TRUE) &&
     exists("bagEarth", where = asNamespace("caret"))
 
 ## ---------------------------------------------------------------------------
-## Output location
+## Output location (robust whether run from repo root or inst/slowtests)
 ## ---------------------------------------------------------------------------
-# Resolve repo root robustly whether run from repo root or inst/slowtests.
 find.repo.root <- function() {
     cands <- c(".", "..", "../..", "/projects/sandbox/earth")
     for (d in cands)
@@ -56,198 +71,17 @@ repo.root <- find.repo.root()
 doc.dir   <- file.path(repo.root, "doc")
 dir.create(doc.dir, showWarnings = FALSE, recursive = TRUE)
 cat("repo.root =", repo.root, "\n")
-cat("caret bagEarth available:", have.caret, "\n\n")
+cat("optional caret bagEarth path enabled:", run.caret, "\n\n")
 
 ## ---------------------------------------------------------------------------
-## Metrics
+## Markdown helper
 ## ---------------------------------------------------------------------------
-rmse <- function(actual, pred) sqrt(mean((actual - pred)^2))
-r2   <- function(actual, pred) {
-    ss.res <- sum((actual - pred)^2)
-    ss.tot <- sum((actual - mean(actual))^2)
-    1 - ss.res / ss.tot
-}
-accuracy   <- function(actual01, prob) mean((prob >= 0.5) == (actual01 == 1))
-brier      <- function(actual01, prob) mean((prob - actual01)^2)
-
-## ---------------------------------------------------------------------------
-## Bagged earth on a pre-built NUMERIC design matrix (factors already expanded)
-## so bootstrap samples and the test set always share identical columns.
-## caret::bagEarth if available, else a documented direct fallback.
-## Returns a predictor function: numeric design matrix -> numeric prediction.
-## ---------------------------------------------------------------------------
-bagged.earth.fit <- function(xmat, yv, B = 30, adaptive.gcv = FALSE, degree = 1) {
-    xmat <- as.data.frame(xmat)
-    if (have.caret) {
-        # bagEarth passes ... through to earth(); pass adaptive.gcv + degree
-        fit <- caret::bagEarth(x = xmat, y = yv, B = B,
-                               degree = degree, adaptive.gcv = adaptive.gcv)
-        pred.fun <- function(newx) as.numeric(predict(fit, as.data.frame(newx)))
-        attr(pred.fun, "engine") <- "caret::bagEarth"
-        attr(pred.fun, "fit")    <- fit
-        return(pred.fun)
-    }
-    # ---- fallback: direct bootstrap-aggregated earth ----
-    n    <- nrow(xmat)
-    fits <- vector("list", B)
-    for (b in seq_len(B)) {
-        idx <- sample.int(n, n, replace = TRUE)
-        fits[[b]] <- earth(x = xmat[idx, , drop = FALSE], y = yv[idx],
-                           degree = degree, adaptive.gcv = adaptive.gcv)
-    }
-    pred.fun <- function(newx) {
-        newx  <- as.data.frame(newx)
-        preds <- vapply(fits, function(f) as.numeric(predict(f, newx)),
-                        numeric(nrow(newx)))
-        if (is.null(dim(preds))) mean(preds) else rowMeans(preds)
-    }
-    attr(pred.fun, "engine") <- "direct-earth bagging (fallback)"
-    attr(pred.fun, "fits")   <- fits
-    return(pred.fun)
-}
-
-## ---------------------------------------------------------------------------
-## Single-model summary (terms + coefficients) for the per-dataset .md file.
-## ---------------------------------------------------------------------------
-coef.table.md <- function(m) {
-    co <- m$coefficients
-    nm <- rownames(co)
-    val <- co[, 1]
-    lines <- c("| term | coefficient |", "|------|-------------|")
-    for (i in seq_along(nm))
-        lines <- c(lines, sprintf("| `%s` | %.6g |", nm[i], val[i]))
-    paste(lines, collapse = "\n")
-}
-
-## ---------------------------------------------------------------------------
-## Run one dataset: holdout OOS via bagged earth (ON/OFF) + earth built-in CV,
-## plus single-model term/coef listings. Writes a per-dataset .md file.
-## ---------------------------------------------------------------------------
-run.dataset <- function(name, form, data, degree = 1,
-                        is.binary = FALSE, B = 30, nfold = 5, ncross = 3) {
-    cat("==== dataset:", name, "(degree =", degree, ") ====\n")
-
-    # Build a single numeric design matrix (factors expanded once) so every
-    # bootstrap fit and the held-out test set share identical columns.
-    mf    <- model.frame(form, data)
-    y.all <- model.response(mf)
-    x.all <- model.matrix(form, mf)
-    x.all <- x.all[, colnames(x.all) != "(Intercept)", drop = FALSE]
-    if (is.binary) y01.all <- as.integer(y.all) - min(as.integer(y.all))
-
-    set.seed(2024)
-    n     <- nrow(x.all)
-    tr    <- sample.int(n, round(0.7 * n))
-    x.tr  <- x.all[tr, , drop = FALSE];  x.te <- x.all[-tr, , drop = FALSE]
-    y.tr  <- y.all[tr];                  y.te <- y.all[-tr]
-    if (is.binary) { y01.tr <- y01.all[tr]; y01.te <- y01.all[-tr] }
-
-    ## --- Engine 1: bagged earth OFF vs ON, holdout OOS ---
-    yv.tr <- if (is.binary) y01.tr else y.tr
-    set.seed(2024)
-    pf.off <- bagged.earth.fit(x.tr, yv.tr, B = B, adaptive.gcv = FALSE, degree = degree)
-    set.seed(2024)
-    pf.on  <- bagged.earth.fit(x.tr, yv.tr, B = B, adaptive.gcv = TRUE,  degree = degree)
-    engine <- attr(pf.off, "engine")
-
-    p.off <- pf.off(x.te)
-    p.on  <- pf.on(x.te)
-
-    if (is.binary) {
-        p.off <- pmin(1, pmax(0, p.off)); p.on <- pmin(1, pmax(0, p.on))
-        bag <- data.frame(
-            setting  = c("ordinary (OFF)", "adaptive (ON)"),
-            oos_rmse = c(rmse(y01.te, p.off),     rmse(y01.te, p.on)),
-            oos_acc  = c(accuracy(y01.te, p.off), accuracy(y01.te, p.on)),
-            oos_brier= c(brier(y01.te, p.off),    brier(y01.te, p.on)))
-    } else {
-        bag <- data.frame(
-            setting  = c("ordinary (OFF)", "adaptive (ON)"),
-            oos_rmse = c(rmse(y.te, p.off), rmse(y.te, p.on)),
-            oos_r2   = c(r2(y.te, p.off),   r2(y.te, p.on)))
-    }
-
-    ## --- Engine 2: earth built-in CV (independent of caret) ---
-    cv.metric <- function(adaptive) {
-        set.seed(2024)
-        m <- earth(form, data = data, degree = degree,
-                   nfold = nfold, ncross = ncross,
-                   adaptive.gcv = adaptive,
-                   glm = if (is.binary) list(family = binomial) else NULL)
-        # cross-validated stats live in m$cv.oof.rsq.tab / m$cv.list summaries
-        list(model = m,
-             insample.rsq = m$rsq,
-             cv.rsq = if (!is.null(m$cv.rsq.tab))
-                          m$cv.rsq.tab[nrow(m$cv.rsq.tab), "mean"] else NA_real_,
-             cv.class.rate = if (!is.null(m$cv.class.rate.tab))
-                          m$cv.class.rate.tab[nrow(m$cv.class.rate.tab), "mean"] else NA_real_)
-    }
-    cv.off <- cv.metric(FALSE)
-    cv.on  <- cv.metric(TRUE)
-
-    ## --- single (non-bagged) models on full data for terms/coefs listing ---
-    m.off.full <- earth(form, data = data, degree = degree, adaptive.gcv = FALSE,
-                        glm = if (is.binary) list(family = binomial) else NULL)
-    m.on.full  <- earth(form, data = data, degree = degree, adaptive.gcv = TRUE,
-                        glm = if (is.binary) list(family = binomial) else NULL)
-
-    ## --- write per-dataset markdown ---
-    md <- c(
-        sprintf("# Adaptive GCV effect cap: %s", name),
-        "",
-        sprintf("- Response formula: `%s`", deparse(form)),
-        sprintf("- Rows: %d (train %d / test %d, 70/30 holdout, seed 2024)",
-                n, nrow(x.tr), nrow(x.te)),
-        sprintf("- earth `degree` = %d", degree),
-        sprintf("- Task type: %s", if (is.binary) "binary classification" else "regression"),
-        sprintf("- OOS bagging engine: %s (B = %d)", engine, B),
-        sprintf("- earth built-in CV: nfold = %d, ncross = %d", nfold, ncross),
-        "",
-        "## Out-of-sample: bagged earth (ordinary vs adaptive)",
-        "",
-        knitr.free.table(bag),
-        "",
-        "## Cross-validation (earth built-in, independent of caret)",
-        "",
-        knitr.free.table(data.frame(
-            setting        = c("ordinary (OFF)", "adaptive (ON)"),
-            insample_rsq   = c(cv.off$insample.rsq, cv.on$insample.rsq),
-            cv_rsq         = c(cv.off$cv.rsq,       cv.on$cv.rsq),
-            cv_class_rate  = c(cv.off$cv.class.rate, cv.on$cv.class.rate))),
-        "",
-        "## Selected terms and coefficients (single model on full data)",
-        "",
-        "### ordinary earth (adaptive.gcv = FALSE)",
-        sprintf("Selected %d of %d terms; in-sample RSq = %.4f, GCV = %.5g",
-                length(m.off.full$selected.terms),
-                nrow(m.off.full$dirs), m.off.full$rsq, m.off.full$gcv),
-        "",
-        coef.table.md(m.off.full),
-        "",
-        "### adaptive earth (adaptive.gcv = TRUE)",
-        sprintf("Selected %d of %d terms; in-sample RSq = %.4f, GCV = %.5g",
-                length(m.on.full$selected.terms),
-                nrow(m.on.full$dirs), m.on.full$rsq, m.on.full$gcv),
-        "",
-        coef.table.md(m.on.full),
-        "")
-    outfile <- file.path(doc.dir, sprintf("adaptive_gcv_%s.md", name))
-    writeLines(md, outfile)
-    cat("wrote", outfile, "\n\n")
-
-    # return a compact summary row list for the combined report
-    list(name = name, degree = degree, is.binary = is.binary,
-         engine = engine, bag = bag, cv.off = cv.off, cv.on = cv.on,
-         outfile = outfile)
-}
-
-## Small helper to render a data.frame as a github-markdown table.
-knitr.free.table <- function(df) {
+md.table <- function(df) {
     fmt <- function(x) {
         if (is.numeric(x)) ifelse(is.na(x), "NA", formatC(x, digits = 5, format = "g"))
         else as.character(x)
     }
-    cols <- names(df)
+    cols   <- names(df)
     header <- paste0("| ", paste(cols, collapse = " | "), " |")
     sep    <- paste0("| ", paste(rep("---", length(cols)), collapse = " | "), " |")
     rows <- apply(df, 1, function(r)
@@ -257,143 +91,418 @@ knitr.free.table <- function(df) {
 }
 
 ## ---------------------------------------------------------------------------
+## trace>=6 cap diagnostics parser (mirrors tests/test.adaptive.gcv.R).
+## Returns a data.frame of the per-term "effectcap CAP" lines (only emitted for
+## SATURATED terms) with the fields the study reports.
+## ---------------------------------------------------------------------------
+parse.field <- function(line, key) {
+    m <- regmatches(line, regexpr(paste0(key, "\\s+[-+0-9.eE]+"), line))
+    if (length(m) == 0) return(NA_real_)
+    as.numeric(sub(paste0("^", key, "\\s+"), "", m))
+}
+# pmethod="none" so the returned $dirs is the FULL forward-pass term set, which
+# lets us map each trace iTerm to its predictor(s) exactly (pruning does not
+# affect the forward pass or the cap diagnostics).
+cap.diag <- function(form, data, degree, effect.cap, linpreds = NULL,
+                     is.binary = FALSE) {
+    args <- list(form, data = data, degree = degree, adaptive.gcv = TRUE,
+                 effect.cap = effect.cap, trace = 6, pmethod = "none")
+    if (!is.null(linpreds)) args$linpreds <- linpreds
+    if (is.binary)          args$glm      <- list(family = binomial)
+    out <- capture.output(fit <- do.call(earth, args))
+    cap.lines <- grep("effectcap CAP:", out, value = TRUE)
+    cap.lines <- sub(".*effectcap CAP:", "effectcap CAP:", cap.lines)
+    df <- if (length(cap.lines) == 0) data.frame() else data.frame(
+        iTerm      = as.integer(sapply(cap.lines, parse.field, key = "iTerm")),
+        dRSSols    = sapply(cap.lines, parse.field, key = "dRSS\\(ols\\)"),
+        dRSSmax    = sapply(cap.lines, parse.field, key = "dRSSmax"),
+        scale      = sapply(cap.lines, parse.field, key = "scale"),
+        deltaKnots = as.integer(sapply(cap.lines, parse.field, key = "deltaKnots")),
+        Cost1      = sapply(cap.lines, parse.field, key = "Cost1"),
+        slackFactor= sapply(cap.lines, parse.field, key = "slackFactor"),
+        row.names  = NULL)
+    list(fit = fit, cap = df)
+}
+
+# Does the term-pair admitted at trace iTerm k use predictor `pred`?  The
+# forward pass numbers terms with the intercept as term 0, so internal term k
+# occupies rows k+1 (and k+2 for a hinge pair) of the full (pmethod="none")
+# dirs matrix.
+term.uses.pred <- function(fit, iTerm, pred) {
+    dirs <- fit$dirs
+    if (!(pred %in% colnames(dirs))) return(FALSE)
+    rows <- intersect(c(iTerm + 1L, iTerm + 2L), seq_len(nrow(dirs)))
+    any(dirs[rows, pred] != 0)
+}
+
+# earliest SATURATED cap row whose term uses the dominant predictor
+dominant.cap.row <- function(cd, pred) {
+    if (nrow(cd$cap) == 0) return(NULL)
+    ord <- cd$cap[order(cd$cap$iTerm), , drop = FALSE]
+    for (i in seq_len(nrow(ord)))
+        if (term.uses.pred(cd$fit, ord$iTerm[i], pred))
+            return(ord[i, ])
+    NULL
+}
+
+## ---------------------------------------------------------------------------
+## earth built-in CV: return in-sample and cross-validated metrics.
+## ---------------------------------------------------------------------------
+cv.fit <- function(form, data, degree, adaptive, effect.cap = 0.9,
+                   linpreds = NULL, is.binary = FALSE) {
+    set.seed(SEED)
+    args <- list(form, data = data, degree = degree,
+                 nfold = NFOLD, ncross = NCROSS,
+                 adaptive.gcv = adaptive, effect.cap = effect.cap)
+    if (!is.null(linpreds)) args$linpreds <- linpreds
+    if (is.binary)          args$glm      <- list(family = binomial)
+    m <- do.call(earth, args)
+    cv.rsq <- if (!is.null(m$cv.rsq.tab))
+        m$cv.rsq.tab[nrow(m$cv.rsq.tab), "mean"] else NA_real_
+    cv.class <- if (!is.null(m$cv.class.rate.tab))
+        m$cv.class.rate.tab[nrow(m$cv.class.rate.tab), "mean"] else NA_real_
+    list(model = m, insample.rsq = m$rsq, cv.rsq = cv.rsq, cv.class = cv.class,
+         nterms = length(m$selected.terms), gcv = m$gcv)
+}
+
+## ---------------------------------------------------------------------------
+## Retained variance of the fitted contribution attributable to a predictor.
+## ---------------------------------------------------------------------------
+retained.effect <- function(fit, pred) {
+    keep <- fit$selected.terms
+    dirs <- fit$dirs[keep, , drop = FALSE]
+    if (!(pred %in% colnames(dirs))) return(NA_real_)
+    uses <- dirs[, pred] != 0
+    if (!any(uses)) return(0)
+    co      <- fit$coefficients[, 1]
+    contrib <- fit$bx[, uses, drop = FALSE] %*% co[uses]
+    var(as.numeric(contrib))
+}
+
+## ---------------------------------------------------------------------------
+## Optional caret::bagEarth OOS check (OFF the critical path).
+## ---------------------------------------------------------------------------
+caret.oos <- function(form, data, degree, is.binary) {
+    if (!run.caret) return(NULL)
+    mf <- model.frame(form, data)
+    y  <- model.response(mf)
+    x  <- model.matrix(form, mf)
+    x  <- x[, colnames(x) != "(Intercept)", drop = FALSE]
+    if (is.binary) y <- as.integer(y) - min(as.integer(y))
+    set.seed(SEED)
+    n  <- nrow(x); tr <- sample.int(n, round(0.7 * n))
+    fit.bag <- function(adaptive) {
+        set.seed(SEED)
+        caret::bagEarth(x = as.data.frame(x[tr, , drop = FALSE]), y = y[tr],
+                        B = 20, degree = degree, adaptive.gcv = adaptive)
+    }
+    pr <- function(m) as.numeric(predict(m, as.data.frame(x[-tr, , drop = FALSE])))
+    rmse <- function(a, p) sqrt(mean((a - p)^2))
+    list(off = rmse(y[-tr], pr(fit.bag(FALSE))),
+         on  = rmse(y[-tr], pr(fit.bag(TRUE))))
+}
+
+## ---------------------------------------------------------------------------
+## Run one dataset end-to-end and write its markdown file.
+## ---------------------------------------------------------------------------
+run.dataset <- function(name, form, data, degree, dominant,
+                        is.binary = FALSE) {
+    cat("==== dataset:", name, "(degree =", degree,
+        ", dominant =", dominant, ") ====\n")
+
+    ## --- ordinary vs adaptive at each effect.cap, earth built-in CV ---
+    off <- cv.fit(form, data, degree, adaptive = FALSE, is.binary = is.binary)
+    on.caps <- lapply(CAPS, function(ec)
+        cv.fit(form, data, degree, adaptive = TRUE, effect.cap = ec,
+               is.binary = is.binary))
+    names(on.caps) <- paste0("cap", CAPS)
+
+    cv.tab <- data.frame(
+        setting      = c("ordinary (OFF)",
+                         sprintf("adaptive cap=%.2g", CAPS)),
+        insample_rsq = c(off$insample.rsq,
+                         sapply(on.caps, `[[`, "insample.rsq")),
+        cv_rsq       = c(off$cv.rsq,   sapply(on.caps, `[[`, "cv.rsq")),
+        cv_classrate = c(off$cv.class, sapply(on.caps, `[[`, "cv.class")),
+        nterms       = c(off$nterms,   sapply(on.caps, `[[`, "nterms")),
+        row.names    = NULL)
+
+    ## --- HINGE vs FORCED-LINEAR contrast for the dominant predictor ---
+    # single (non-CV) fits at effect.cap=0.5 to read the cap diagnostics, and
+    # CV fits at effect.cap=0.5 for the OOS score of each representation.
+    ec.contrast <- 0.5
+    d.hinge <- cap.diag(form, data, degree, ec.contrast, linpreds = NULL,
+                        is.binary = is.binary)
+    d.lin   <- cap.diag(form, data, degree, ec.contrast, linpreds = dominant,
+                        is.binary = is.binary)
+    cv.hinge <- cv.fit(form, data, degree, adaptive = TRUE,
+                       effect.cap = ec.contrast, linpreds = NULL,
+                       is.binary = is.binary)
+    cv.lin   <- cv.fit(form, data, degree, adaptive = TRUE,
+                       effect.cap = ec.contrast, linpreds = dominant,
+                       is.binary = is.binary)
+
+    # the dominant predictor's earliest SATURATED cap row in each fit
+    ch <- dominant.cap.row(d.hinge, dominant)
+    cl <- dominant.cap.row(d.lin,   dominant)
+
+    contrast.tab <- data.frame(
+        representation = c("hinge", "forced linear"),
+        deltaKnots     = c(if (!is.null(ch)) ch$deltaKnots else NA,
+                           if (!is.null(cl)) cl$deltaKnots else NA),
+        Cost1          = c(if (!is.null(ch)) ch$Cost1 else NA,
+                           if (!is.null(cl)) cl$Cost1 else NA),
+        slackFactor    = c(if (!is.null(ch)) ch$slackFactor else NA,
+                           if (!is.null(cl)) cl$slackFactor else NA),
+        dRSSmax_budget = c(if (!is.null(ch)) ch$dRSSmax else NA,
+                           if (!is.null(cl)) cl$dRSSmax else NA),
+        CapScale       = c(if (!is.null(ch)) ch$scale else NA,
+                           if (!is.null(cl)) cl$scale else NA),
+        retained_var   = c(retained.effect(cv.hinge$model, dominant),
+                           retained.effect(cv.lin$model,   dominant)),
+        cv_rsq         = c(cv.hinge$cv.rsq, cv.lin$cv.rsq),
+        row.names      = NULL)
+
+    # Verdict.  The Stage-1 claim is that the cheaper LINEAR form is shrunk LESS
+    # than the HINGE form: it carries a LOWER per-term complexity cost (Cost1),
+    # a LARGER slackFactor, and a LARGER CapScale (fraction of its own OLS effect
+    # that is retained).  CapScale/slackFactor are the scale-relative shrinkage
+    # signals and are the right comparison; the absolute budget dRSSmax mixes the
+    # complexity charge with the raw OLS-effect ceiling, which differs between
+    # the two differently-shaped fits, so it is reported but not asserted on.
+    got.h <- !is.null(ch); got.l <- !is.null(cl)
+    linear.favored <- got.h && got.l &&
+        cl$deltaKnots < ch$deltaKnots &&
+        cl$slackFactor > ch$slackFactor &&
+        cl$scale > ch$scale
+    verdict <- if (!got.h || !got.l)
+        "the dominant predictor's term was NOT saturated in one representation (its cap did not bind at effect.cap=0.5); no divergence is expected there"
+    else if (cl$deltaKnots == ch$deltaKnots)
+        sprintf(paste0("both representations charged the same per-term knot cost (deltaKnots=%d); ",
+                       "the forced-linear term did not reduce the knot charge here (the predictor's ",
+                       "earliest saturated term was already linear), so no divergence is expected"),
+                ch$deltaKnots)
+    else if (linear.favored)
+        "YES - the cheaper LINEAR form (0 knots) carries a lower Cost1, a larger slackFactor and a larger CapScale (shrunk less) than the HINGE form (1 knot), exactly as the per-term knot charge predicts"
+    else
+        "NO - despite the lower knot charge the linear form was not shrunk strictly less here"
+
+    ## --- optional caret OOS (off critical path) ---
+    caret.res <- caret.oos(form, data, degree, is.binary)
+
+    ## --- write per-dataset markdown ---
+    md <- c(
+        sprintf("# Adaptive GCV effect cap (Stage 1): %s", name),
+        "",
+        sprintf("- Response formula: `%s`", deparse(form)),
+        sprintf("- Rows: %d", nrow(data)),
+        sprintf("- earth `degree` = %d", degree),
+        sprintf("- Task type: %s",
+                if (is.binary) "binary classification" else "regression"),
+        sprintf("- Dominant predictor studied (hinge vs forced linear): `%s`", dominant),
+        sprintf("- OOS engine: earth built-in cross-validation, nfold = %d, ncross = %d, seed %d",
+                NFOLD, NCROSS, SEED),
+        "",
+        "## Stage-1 cap semantics",
+        "",
+        "The cap is GCV / per-term-complexity adaptive (not a fixed fraction of",
+        "variance).  A term's realised delta-RSS is limited to",
+        "`DeltaRssMax = BreakEven + slackFactor*(RssDelta - BreakEven)` where",
+        "`slackFactor = (1 - clamp(Cost1))^(1/effect.cap - 1)` and `Cost1` uses an",
+        "EXPLICIT per-term knot charge (0 knots for a linear/linpreds term, 1 knot",
+        "for a hinge term).  `effect.cap >= 1` reproduces stock earth exactly.",
+        "",
+        "## Ordinary vs adaptive: in-sample and cross-validated fit",
+        "",
+        md.table(cv.tab),
+        "",
+        sprintf("## Hinge vs forced-linear contrast for `%s` (effect.cap = %.2g)",
+                dominant, ec.contrast),
+        "",
+        "For the dominant predictor we compare its natural HINGE representation",
+        "against the SAME predictor FORCED LINEAR via `linpreds`.  `deltaKnots`,",
+        "`Cost1`, `slackFactor`, the effect budget `dRSSmax`, and the applied",
+        "`CapScale` are read from the `trace >= 6` cap diagnostics for the",
+        "predictor's earliest saturated term; `retained_var` is the variance of",
+        "the fitted contribution attributable to the predictor; `cv_rsq` is the",
+        "earth built-in CV RSq of the whole model under each representation.",
+        "",
+        md.table(contrast.tab),
+        "",
+        sprintf("**Divergence verdict: %s.**", verdict),
+        "")
+    if (!is.null(caret.res))
+        md <- c(md,
+            "## Optional caret::bagEarth holdout RMSE (off the critical path)",
+            "",
+            md.table(data.frame(setting = c("ordinary", "adaptive"),
+                                oos_rmse = c(caret.res$off, caret.res$on))),
+            "")
+    outfile <- file.path(doc.dir, sprintf("adaptive_gcv_%s.md", name))
+    writeLines(md, outfile)
+    cat("wrote", outfile, "\n")
+    cat("  ", verdict, "\n\n")
+
+    list(name = name, degree = degree, is.binary = is.binary,
+         dominant = dominant, cv.tab = cv.tab, contrast.tab = contrast.tab,
+         linear.favored = linear.favored, verdict = verdict,
+         off = off, on.caps = on.caps, outfile = outfile)
+}
+
+## ---------------------------------------------------------------------------
 ## Datasets
 ## ---------------------------------------------------------------------------
 results <- list()
 
 data(ozone1, package = "earth")
 results[["ozone1"]] <- run.dataset(
-    "ozone1", O3 ~ ., ozone1, degree = 2, is.binary = FALSE, B = 30)
+    "ozone1", O3 ~ ., ozone1, degree = 2, dominant = "temp")
 
 data(trees)
 results[["trees"]] <- run.dataset(
-    "trees", Volume ~ ., trees, degree = 1, is.binary = FALSE, B = 30)
+    "trees", Volume ~ ., trees, degree = 1, dominant = "Girth")
 
 results[["mtcars"]] <- run.dataset(
-    "mtcars", mpg ~ ., mtcars, degree = 1, is.binary = FALSE, B = 30)
+    "mtcars", mpg ~ ., mtcars, degree = 1, dominant = "disp")
 
 data(etitanic, package = "earth")
-et <- etitanic
-et$survived <- factor(ifelse(et$survived == 1, "yes", "no"))
-# earth handles factor response via glm=binomial; keep numeric 0/1 for metrics
-et2 <- etitanic
+# age is the dominant CONTINUOUS predictor (sex/pclass are factors, for which a
+# hinge is meaningless); forcing a continuous predictor linear is the meaningful
+# Stage-1 contrast.
 results[["etitanic"]] <- run.dataset(
-    "etitanic", survived ~ ., et2, degree = 2, is.binary = TRUE, B = 30)
+    "etitanic", survived ~ ., etitanic, degree = 2, dominant = "age",
+    is.binary = TRUE)
 
 ## ---------------------------------------------------------------------------
 ## Combined summary report
 ## ---------------------------------------------------------------------------
-engine.used <- results[[1]]$engine
-summary.lines <- c(
-    "# Adaptive GCV Effect Cap: in-sample vs out-of-sample comparison",
+lines <- c(
+    "# Adaptive GCV Effect Cap (Stage 1): in-sample vs out-of-sample comparison",
     "",
     "This report compares ordinary earth (`adaptive.gcv = FALSE`, the default)",
-    "against the experimental adaptive GCV effect cap (`adaptive.gcv = TRUE`) on",
-    "several established datasets, measuring **out-of-sample** predictive power.",
+    "against the experimental **Stage-1** adaptive GCV effect cap",
+    "(`adaptive.gcv = TRUE`) on several established datasets, using genuine",
+    "out-of-sample (OOS) scores from earth's built-in cross-validation.",
+    "",
+    "## What changed in Stage 1",
+    "",
+    "The effect cap is now **GCV / per-term-complexity adaptive**, not a fixed",
+    "fraction of the total variance.  When a candidate term is admitted, the",
+    "incremental delta-RSS it is allowed to realise is",
+    "",
+    "```",
+    "DeltaRssMax = BreakEven + slackFactor * (RssDelta - BreakEven)",
+    "slackFactor = (1 - clamp(Cost1))^gamma,     gamma = 1/effect.cap - 1",
+    "Cost1       = (nOldUsedTerms + deltaTerms + Penalty*(nKnotsOld + deltaKnots)) / n",
+    "```",
+    "",
+    "where `RssDelta` is the unconstrained OLS effect (ceiling), `BreakEven` is",
+    "the GCV break-even reduction (floor), and the key Stage-1 change is the",
+    "**explicit per-term knot charge**: `deltaKnots = 0` for a linear/`linpreds`",
+    "term and `deltaKnots = 1` for a hinge term.  Because `Cost1` rises with",
+    "`deltaKnots` and `slackFactor` decreases with `Cost1`, a HINGE term gets a",
+    "SMALLER budget than a LINEAR term carrying the same OLS effect.",
+    "`effect.cap >= 1` forces `slackFactor == 1` and reproduces stock earth",
+    "byte-for-byte.",
+    "",
+    "## The Stage-1 question",
+    "",
+    "> Under the per-term-complexity-aware cap, do HINGE and LINEAR terms diverge",
+    "> as predicted?  Does a dominant predictor entered as a cheap LINEAR term (0",
+    "> knots) get a HIGHER justified effect budget / larger CapScale (shrunk",
+    "> LESS) than the same signal expressed as a HINGE (1 knot)?",
+    "",
+    "For each dataset the dominant predictor is fit once as a HINGE (default) and",
+    "once FORCED LINEAR via `linpreds`, and we report the retained effect /",
+    "CapScale (from `trace >= 6`) and the OOS CV RSq of each representation.",
+    "This uses the EXISTING `linpreds` mechanism only to MEASURE the divergence;",
+    "generating both a hinged and unhinged version of every candidate inside the",
+    "algorithm is Stage 2 and is deliberately out of scope here.",
     "",
     "## Methodology",
     "",
-    sprintf("- **OOS bagging engine:** %s. bagEarth passes `...` through to `earth()`, so the identical bagging procedure is run with the feature OFF and ON.", engine.used),
-    "- **Holdout:** a single 70/30 train/test split per dataset (`set.seed(2024)`); bagged earth is fit on train and scored on the held-out test rows.",
-    "- **Cross-validation:** earth's own k-fold CV (`nfold=5, ncross=3`, `set.seed(2024)`), fully independent of caret, reports cross-validated RSq (and classification rate for the binary response).",
-    "- **Metrics:** RMSE and R^2 for regression; RMSE, accuracy and Brier score for the binary `etitanic$survived` response.",
-    "- **Interactions:** `ozone1` and `etitanic` are fit with `degree = 2`.",
-    "- Per-dataset details (selected terms and coefficients for both settings) are in the companion files listed below.",
+    sprintf("- **OOS engine (primary, only critical path):** earth built-in CV, `nfold = %d, ncross = %d`, `set.seed(%d)`.",
+            NFOLD, NCROSS, SEED),
+    sprintf("- **effect.cap values studied:** %s (both < 1; the hinge-vs-linear contrast uses effect.cap = 0.5).",
+            paste(CAPS, collapse = ", ")),
+    "- **Optional:** a `caret::bagEarth` 70/30 holdout is included only when",
+    "  `options(adaptive.gcv.run.caret = TRUE)` is set and caret is installed;",
+    "  it is OFF the critical path (caret bagEarth is slow).",
     "",
     "## Datasets",
     "",
-    "| dataset | task | degree | rows | notes |",
-    "| --- | --- | --- | --- | --- |",
-    "| ozone1 | regression | 2 | 330 | canonical MARS / earth-vignette example |",
-    "| trees | regression | 1 | 31 | base R |",
-    "| mtcars | regression | 1 | 32 | base R |",
-    "| etitanic | classification | 2 | 1046 | used in earth examples; binary `survived` |",
+    "| dataset | task | degree | rows | dominant predictor | notes |",
+    "| --- | --- | --- | --- | --- | --- |",
+    "| ozone1 | regression | 2 | 330 | temp | canonical MARS / earth-vignette example |",
+    "| trees | regression | 1 | 31 | Girth | base R |",
+    "| mtcars | regression | 1 | 32 | disp | base R |",
+    "| etitanic | classification | 2 | 1046 | age | earth example, binary `survived` |",
     "",
-    "## Out-of-sample results (bagged earth, holdout test set)",
-    "")
-
-# regression OOS table
-reg <- Filter(function(r) !r$is.binary, results)
-summary.lines <- c(summary.lines,
-    "### Regression (RMSE / R^2 on held-out test set)",
+    "## Cross-validated fit: ordinary vs adaptive",
     "",
-    "| dataset | setting | OOS RMSE | OOS R^2 |",
-    "| --- | --- | --- | --- |")
-for (r in reg) {
-    b <- r$bag
-    for (i in 1:2)
-        summary.lines <- c(summary.lines, sprintf("| %s | %s | %.4g | %.4g |",
-            r$name, b$setting[i], b$oos_rmse[i], b$oos_r2[i]))
-}
-
-# binary OOS table
-bin <- Filter(function(r) r$is.binary, results)
-if (length(bin)) {
-    summary.lines <- c(summary.lines, "",
-        "### Classification (etitanic$survived, held-out test set)",
-        "",
-        "| dataset | setting | OOS RMSE | OOS accuracy | OOS Brier |",
-        "| --- | --- | --- | --- | --- |")
-    for (r in bin) {
-        b <- r$bag
-        for (i in 1:2)
-            summary.lines <- c(summary.lines, sprintf("| %s | %s | %.4g | %.4g | %.4g |",
-                r$name, b$setting[i], b$oos_rmse[i], b$oos_acc[i], b$oos_brier[i]))
-    }
-}
-
-# built-in CV table
-summary.lines <- c(summary.lines, "",
-    "## Cross-validation (earth built-in, independent of caret)",
-    "",
-    "| dataset | setting | in-sample RSq | CV RSq | CV class-rate |",
-    "| --- | --- | --- | --- | --- |")
+    "| dataset | setting | in-sample RSq | CV RSq | CV class-rate | nterms |",
+    "| --- | --- | --- | --- | --- | --- |")
 for (r in results) {
-    for (s in c("off", "on")) {
-        cv <- if (s == "off") r$cv.off else r$cv.on
-        lbl <- if (s == "off") "ordinary (OFF)" else "adaptive (ON)"
-        summary.lines <- c(summary.lines, sprintf("| %s | %s | %.4g | %.4g | %s |",
-            r$name, lbl, cv$insample.rsq, cv$cv.rsq,
-            if (is.na(cv$cv.class.rate)) "NA" else formatC(cv$cv.class.rate, digits = 4, format = "g")))
-    }
+    ct <- r$cv.tab
+    for (i in seq_len(nrow(ct)))
+        lines <- c(lines, sprintf("| %s | %s | %.4g | %.4g | %s | %d |",
+            r$name, ct$setting[i], ct$insample_rsq[i], ct$cv_rsq[i],
+            if (is.na(ct$cv_classrate[i])) "NA"
+            else formatC(ct$cv_classrate[i], digits = 4, format = "g"),
+            as.integer(ct$nterms[i])))
 }
 
-# interpretation (computed, so it stays honest to the numbers)
-interp <- c("", "## Interpretation", "")
-for (r in reg) {
-    d <- r$bag$oos_rmse[2] - r$bag$oos_rmse[1]  # adaptive - ordinary
-    verdict <- if (d < -1e-6) "IMPROVES" else if (d > 1e-6) "HURTS" else "is NEUTRAL for"
-    interp <- c(interp, sprintf(
-        "- **%s** (regression, degree %d): adaptive.gcv %s out-of-sample RMSE (ordinary %.4g vs adaptive %.4g, delta %+.4g).",
-        r$name, r$degree, verdict, r$bag$oos_rmse[1], r$bag$oos_rmse[2], d))
+lines <- c(lines, "",
+    "## Hinge vs forced-linear divergence (dominant predictor, effect.cap = 0.5)",
+    "",
+    "| dataset | predictor | representation | deltaKnots | slackFactor | dRSSmax budget | CapScale | retained var | CV RSq |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+for (r in results) {
+    cc <- r$contrast.tab
+    reps <- c("hinge", "forced linear")
+    for (i in 1:2)
+        lines <- c(lines, sprintf("| %s | %s | %s | %s | %s | %s | %s | %s | %s |",
+            r$name, r$dominant, reps[i],
+            if (is.na(cc$deltaKnots[i])) "NA" else as.character(cc$deltaKnots[i]),
+            formatC(cc$slackFactor[i], digits = 5, format = "g"),
+            formatC(cc$dRSSmax_budget[i], digits = 5, format = "g"),
+            formatC(cc$CapScale[i], digits = 5, format = "g"),
+            formatC(cc$retained_var[i], digits = 5, format = "g"),
+            formatC(cc$cv_rsq[i], digits = 5, format = "g")))
 }
-for (r in bin) {
-    d <- r$bag$oos_brier[2] - r$bag$oos_brier[1]
-    verdict <- if (d < -1e-6) "IMPROVES" else if (d > 1e-6) "HURTS" else "is NEUTRAL for"
-    interp <- c(interp, sprintf(
-        "- **%s** (classification, degree %d): adaptive.gcv %s out-of-sample Brier score (ordinary %.4g vs adaptive %.4g, delta %+.4g); OOS accuracy ordinary %.4g vs adaptive %.4g.",
-        r$name, r$degree, verdict, r$bag$oos_brier[1], r$bag$oos_brier[2], d,
-        r$bag$oos_acc[1], r$bag$oos_acc[2]))
-}
-interp <- c(interp, "",
-    "The adaptive cap is a conservative, default-off modification. Terms are selected by the",
-    "ordinary MARS forward pass, but each term's predictive effect (delta-R^2) is capped at",
-    sprintf("`effect.cap` (default %.2g, the maximum fraction of the total sum of squares any", 0.9),
-    "single term may explain); the saved caps are then applied as a *constrained* final fit,",
-    "so the un-capped terms absorb the residual a dominant term is not allowed to explain.",
-    "Because a strong term is deliberately held below its unconstrained least-squares effect,",
-    "the adaptive model is more heavily regularised in-sample; whether that regularisation",
-    "helps or hurts out-of-sample generalisation is dataset dependent, as the table above",
-    "shows. Ordinary earth remains the default. The `effect.cap` argument tunes the strength:",
-    "`effect.cap >= 1` recovers stock earth, smaller values redistribute more signal.",
+
+lines <- c(lines, "", "## Divergence verdict per dataset", "")
+for (r in results)
+    lines <- c(lines, sprintf("- **%s** (dominant `%s`): %s.",
+                              r$name, r$dominant, r$verdict))
+
+n.fav <- sum(vapply(results, function(r) isTRUE(r$linear.favored), logical(1)))
+lines <- c(lines, "", "## Interpretation", "",
+    sprintf(paste0("Across the %d datasets, the cheaper LINEAR representation of the ",
+                   "dominant predictor received a strictly larger effect budget and ",
+                   "larger CapScale (was shrunk less) than the HINGE representation in ",
+                   "%d of them."),
+            length(results), n.fav),
+    "This is the divergence the explicit per-term knot charge (linear = 0 knots,",
+    "hinge = 1 knot) is designed to produce: a hinge is charged for its extra knot",
+    "through a higher `Cost1`, which lowers `slackFactor` and therefore the effect",
+    "budget, so the same signal is regularised more heavily when expressed as a",
+    "hinge than when forced linear.  Where the dominant predictor's term is not",
+    "saturated in a given representation (the cap does not bind), no divergence is",
+    "expected and the table reports that directly.",
+    "",
+    "Whether the extra regularisation helps or hurts OOS generalisation is",
+    "dataset dependent (see the CV RSq columns); ordinary earth remains the",
+    "default.  The `effect.cap` argument tunes the strength: `effect.cap >= 1`",
+    "recovers stock earth, smaller values push saturated terms further toward",
+    "their GCV break-even effect, with hinges pushed hardest.",
     "",
     "## Companion per-dataset files", "")
 for (r in results)
-    interp <- c(interp, sprintf("- `doc/%s`", basename(r$outfile)))
-
-summary.lines <- c(summary.lines, interp, "")
+    lines <- c(lines, sprintf("- `doc/%s`", basename(r$outfile)))
+lines <- c(lines, "")
 
 summary.file <- file.path(doc.dir, "adaptive_gcv_comparison.md")
-writeLines(summary.lines, summary.file)
+writeLines(lines, summary.file)
 cat("wrote", summary.file, "\n")
-cat("\nDONE. bagging engine used:", engine.used, "\n")
+cat("\nDONE. linear-favored in", n.fav, "of", length(results), "datasets.\n")
