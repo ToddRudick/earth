@@ -186,3 +186,21 @@ which the tables report directly.
 - `doc/adaptive_gcv_mtcars.md`
 - `doc/adaptive_gcv_etitanic.md`
 
+## Larger and wider datasets
+
+The datasets above are small (31 to 1046 rows, up to 9 predictors). A companion
+study repeats the SAME three-way comparison on **larger and wider** datasets
+(MASS::Boston 506x13, kernlab::spam 4601x57, AppliedPredictiveModeling
+solubility 951x228, and a reproducible synthetic design 4000x40), adds a
+runtime column and per-predictor linear-vs-hinge form counts, and reports
+honestly whether automatic form competition helps / is neutral / hurts OOS at
+scale:
+
+- [`doc/adaptive_gcv_large_comparison.md`](adaptive_gcv_large_comparison.md) -- combined large/wide report.
+- [`doc/adaptive_gcv_boston.md`](adaptive_gcv_boston.md)
+- [`doc/adaptive_gcv_spam.md`](adaptive_gcv_spam.md)
+- [`doc/adaptive_gcv_solubility.md`](adaptive_gcv_solubility.md)
+- [`doc/adaptive_gcv_synthetic_large.md`](adaptive_gcv_synthetic_large.md)
+
+The companion script is `inst/slowtests/adaptive.gcv.large.comparison.R`.
+
