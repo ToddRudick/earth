@@ -30,6 +30,21 @@
   `adaptive.gcv=FALSE` the results are byte-for-byte identical to previous
   versions of `earth`.
 
+  When `adaptive.gcv=TRUE`, the forward pass now also automatically competes a
+  hinge form against a linear (unhinged) form of each candidate predictor and
+  admits the form with the higher justified (capped) effect under the
+  per-term-complexity budget.  Because the per-term knot charge makes a hinge
+  cost more than the cheaper 0-knot linear form, a genuinely-linear dominant
+  predictor is admitted as a linear term automatically, so the user no longer
+  needs to set `linpreds` to obtain the linear form; genuinely-nonlinear signal
+  still enters as a hinge.  This automatic linear selection is experimental and
+  gated: it occurs only when `effect.cap < 1` and `Auto.linpreds=TRUE` (the
+  default); `Auto.linpreds=FALSE` suppresses it (the fit falls back to the
+  hinge form).  For interactions (`degree > 1`) it is a first-cut rule that
+  competes only the degree-1 new-form linear-vs-hinge pair (a child interaction
+  hinge is charged one knot).  As before, with the default `adaptive.gcv=FALSE`
+  the results are byte-for-byte identical to stock `earth`.
+
   Updated some web addresses in the man pages.
 
 ## 5.3.5 Dec 30, 2025

@@ -282,6 +282,26 @@ edges of the data).  See also the \code{Adjust.endspan} argument.
      fitting path; with case weights the model is fit as if
      \code{adaptive.gcv=FALSE}.
 \cr
+     When \code{adaptive.gcv=TRUE} the forward pass \emph{also} automatically
+     competes, for each candidate predictor, a hinge form against a linear
+     (unhinged) form and admits whichever form has the higher \emph{justified}
+     (capped) effect under the per-term-complexity budget.  Because the
+     per-term knot charge makes a hinge (which adds one knot) cost more than
+     the linear form (which adds none), a genuinely-linear dominant predictor
+     is admitted \emph{automatically} as a linear term, without the user
+     having to set \code{linpreds}; genuinely-nonlinear signal still enters as
+     a hinge (the hinge wins the justified competition).  This automatic
+     linear selection is gated: it occurs only when \code{effect.cap < 1} and
+     \code{Auto.linpreds=TRUE} (the default).  Setting \code{Auto.linpreds=FALSE}
+     \emph{suppresses} the automatic linear selection (the fit falls back to
+     the hinge form), consistent with \code{earth}'s contract of not inferring
+     linearity when \code{Auto.linpreds} is off.
+\cr
+     For interactions (\code{degree > 1}) this is a first-cut rule: no new
+     interaction-linear candidates are invented, the competition applies only
+     to the \code{degree}-1 new-form linear-vs-hinge pair, and a child
+     interaction hinge is charged one knot.
+\cr
      This is an experimental statistical feature.
      With the default \code{adaptive.gcv=FALSE} the results are byte-for-byte
      identical to standard \code{earth}.  See \code{trace>=6} for per-step
