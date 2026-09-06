@@ -2,6 +2,16 @@
 
 ## 5.3.6 Aug 10, 2026
 
+  Added the experimental `adaptive.gcv` argument to `earth` (default `FALSE`).
+  When `TRUE`, this enables the Adaptive GCV Effect Cap in the forward pass:
+  the incremental predictive effect (delta-RSS) a newly admitted term may
+  contribute is capped at the amount justified by the current GCV/complexity
+  tradeoff, leaving remaining signal for other terms to compete.  The cap is
+  on the predictive effect (not the raw coefficient) and is measured
+  conditional on the current model, so it is scale-invariant.  With the
+  default `adaptive.gcv=FALSE` the results are byte-for-byte identical to
+  previous versions of `earth`.
+
   Updated some web addresses in the man pages.
 
 ## 5.3.5 Dec 30, 2025

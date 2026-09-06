@@ -2747,7 +2747,8 @@ static void ForwardPass(
     const double AdjustEndSpan,  // in:
     const bool AutoLinPreds,     // in: assume predictor linear if knot is min predictor value
     const bool UseBetaCache,     // in: true to use the beta cache, for speed
-    const char* sPredNames[])    // in: predictor names, can be NULL
+    const char* sPredNames[],    // in: predictor names, can be NULL
+    const bool AdaptiveGcv)      // in: true to enable the experimental Adaptive GCV Effect Cap
 {
     tprintf(5, "earth.c %s\n", VERSION);
     CheckForwardPassArgs(x, y, yw, WeightsArg, nCases, nResp, nPreds,
@@ -2853,10 +2854,80 @@ static void ForwardPass(
                 nMaxTerms, LinPredIsBest, LinPreds, x, xOrder, yw != NULL);
 
         const bool IsTermPair = iBestCase > 0 && IsNewForm;
+        const int nOldUsedTerms = nUsedTerms; // complexity BEFORE this term is admitted
         nUsedTerms++;
         if(IsTermPair)
             nUsedTerms++;     // add paired term
-        Rss -= RssDelta;
+
+        // ---------------------------------------------------------------------
+        // Adaptive GCV Effect Cap (FEAT-002), experimental, default OFF.
+        //
+        // When AdaptiveGcv is false the code below is a no-op and the forward
+        // pass is byte-for-byte identical to stock earth.
+        //
+        // Mechanism: SELECTION-BUDGET (design "A" in the feature spec).
+        // The forward pass works in an ORTHONORMAL basis (bxOrth columns have
+        // unit length, so B^T B = 1).  FindTerm returns RssDelta = bhat^2, the
+        // unconstrained incremental RSS reduction of the best candidate, where
+        // bhat = B_perp^T r is the OLS coefficient on the residualized+normalized
+        // candidate direction.  This RssDelta is already the spec's delta-RSS
+        // measured CONDITIONAL on the current model (earth's orthogonal
+        // residualization does this), so no second residualization is added.
+        //
+        // We derive a GCV-justified budget delta-RSS_max from earth's own GCV
+        // machinery: the largest RSS reduction that does NOT increase GCV when
+        // the term's complexity is charged.  GCV = Rss / (n*(1-C/n)^2), so the
+        // break-even reduction from old complexity C0 to new complexity C1 is
+        //   delta-RSS_max = Rss0 * (1 - ((1-C1/n)/(1-C0/n))^2).
+        // A candidate whose unconstrained delta-RSS exceeds this budget is
+        // "capped": we charge only delta-RSS_max against the running Rss that
+        // drives GCV and the forward-pass stopping rules.  Because the working
+        // Rss then stays higher, the GCV/GRSq trajectory is more conservative
+        // per term but the pass keeps admitting terms longer, so OTHER
+        // predictors' terms get the opportunity to enter the full term set and
+        // survive to the pruning pass and the final (unconstrained) lm.fit.
+        // This is the spec's central intent: a dominant candidate is prevented
+        // from monopolising the complexity budget in a single step.
+        //
+        // NOTE ON ARCHITECTURE: the forward pass only SELECTS terms/knots; the
+        // final coefficients come from an unconstrained lm.fit(bx,y) in
+        // earth.fit.R.  We therefore realize the cap through what gets SELECTED
+        // (the Rss/GCV budget above), which is the only lever that survives to
+        // the final fit.  The capped term itself is still added to bx exactly
+        // as stock earth would add it (same knot, same direction); only the
+        // bookkeeping that governs how many/which further terms are admitted is
+        // adjusted.  The closed-form saturated coefficient
+        //   b_max = bhat - sqrt(bhat^2 - delta-RSS_max)   (B^T B = 1)
+        // is computed below purely as a diagnostic/reference quantity.
+        double RssDeltaCharged = RssDelta; // amount charged against the running Rss
+        if(AdaptiveGcv && Penalty != -1 && iBestCase >= 0 && RssDelta > 0) {
+            const double GcvOld = GetGcv(nOldUsedTerms, nCases, Rss, Penalty);
+            // RSS at which the new (higher) complexity yields the same GCV as
+            // the current model: solve GetGcv(nUsedTerms,n,RssBreakEven,P)==GcvOld.
+            // GetGcv = Rss / (n*(1-Cost)^2), so RssBreakEven = GcvOld*n*(1-Cost1)^2.
+            const double nKnots1 = ((double)nUsedTerms - 1) / 2;
+            const double Cost1   = (nUsedTerms + Penalty * nKnots1) / nCases;
+            double DeltaRssMax;
+            if(Cost1 >= 1)
+                DeltaRssMax = RssDelta; // complexity saturated: no cap (behave normally)
+            else {
+                const double RssBreakEven = GcvOld * nCases * sq(1 - Cost1);
+                DeltaRssMax = Rss - RssBreakEven; // budget = current Rss minus break-even Rss
+                if(DeltaRssMax < 0)
+                    DeltaRssMax = 0;
+            }
+            if(RssDelta > DeltaRssMax) {
+                // Candidate exceeds its GCV-justified effect: saturate it.
+                const double bhat = sqrt(RssDelta);            // OLS coef, B^T B = 1
+                const double bmax = bhat - sqrt(RssDelta - DeltaRssMax); // diagnostic
+                tprintf(6,
+                    "effectcap CAP: iTerm %-3d bhat %-12.5g dRSS(ols) %-12.5g "
+                    "dRSSmax %-12.5g bmax %-12.5g\n",
+                    nTerms, bhat, RssDelta, DeltaRssMax, bmax);
+                RssDeltaCharged = DeltaRssMax;
+            }
+        }
+        Rss -= RssDeltaCharged;
         Rss = MaybeZero(Rss); // RSS can go slightly neg due to numerical error
         Gcv = GetGcv(nUsedTerms, nCases, Rss, Penalty);
         const double OldRSq = RSq;
@@ -2872,9 +2943,9 @@ static void ForwardPass(
         // or any model state, so it cannot change numeric output at any trace
         // level.
         tprintf(6,
-            "effectcap diag: iTerm %-3d RSS %-12.5g RssDelta %-12.5g "
-            "complexity(nUsedTerms) %-3d GCV %-12.5g\n",
-            nTerms, Rss, RssDelta, nUsedTerms, Gcv);
+            "effectcap diag: iTerm %-3d RSS %-12.5g RssDelta(ols) %-12.5g "
+            "RssDelta(charged) %-12.5g complexity(nUsedTerms) %-3d GCV %-12.5g\n",
+            nTerms, Rss, RssDelta, RssDeltaCharged, nUsedTerms, Gcv);
 
         PrintForwardStep(nTerms, nUsedTerms, iBestCase, iBestPred,
             iBestParent, iBestParent < 0? 0: nDegree[iBestParent]+1,
@@ -2969,7 +3040,8 @@ SEXP ForwardPassR(             // for use by R
     SEXP SEXP_nAutoLinPreds,   // in: assume predictor linear if knot is min predictor value
     SEXP SEXP_nUseBetaCache,   // in: 1 to use the beta cache, for speed
     SEXP SEXP_Trace,           // in: 0 none 1 overview 2 forward 3 pruning 4 more pruning
-    SEXP SEXP_sPredNames)      // in: predictor names in trace printfs
+    SEXP SEXP_sPredNames,      // in: predictor names in trace printfs
+    SEXP SEXP_AdaptiveGcv)     // in: 1 to enable experimental Adaptive GCV Effect Cap (FEAT-002)
 {
     const size_t nCases       = (size_t)(INTEGER(SEXP_nCases)[0]);
     const int nResp           = INTEGER(SEXP_nResp)[0];
@@ -3031,7 +3103,8 @@ SEXP ForwardPassR(             // for use by R
             REAL(SEXP_FastBeta)[0], REAL(SEXP_NewVarPenalty)[0],
             INTEGER(SEXP_LinPreds), REAL(SEXP_AdjustEndSpan)[0],
             INTEGER(SEXP_nAutoLinPreds)[0], INTEGER(SEXP_nUseBetaCache)[0] != 0,
-            sPredNames);
+            sPredNames,
+            INTEGER(SEXP_AdaptiveGcv)[0] != 0);
 
     FreeAllowedFunc(); // calls R_ReleaseObject
 

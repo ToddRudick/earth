@@ -86,6 +86,15 @@ earth.fit <- function(
     fast.k         = 20,    # Fast MARS K: 0 means use all terms i.e. no Fast MARS
     fast.beta      = 1,     # Fast MARS ageing coefficient
 
+    adaptive.gcv   = FALSE, # EXPERIMENTAL (FEAT-002): TRUE enables the Adaptive GCV
+                            # Effect Cap in the forward pass.  When a candidate term's
+                            # unconstrained incremental effect (delta-RSS) exceeds the
+                            # amount justified by the current GCV/complexity tradeoff,
+                            # only the justified amount is charged against the working
+                            # RSS/GCV budget, so the forward search leaves signal for
+                            # other terms to compete.  Default FALSE reproduces stock
+                            # earth exactly.  See man/earth.Rd.
+
                             # Following affect pruning only, not forward pass
                             # If you change these, update prune.only.args too!
 
@@ -144,6 +153,7 @@ earth.fit <- function(
     check.numeric.scalar(newvar.penalty)
     check.numeric.scalar(fast.k)
     check.numeric.scalar(fast.beta)
+    adaptive.gcv <- check.boolean(adaptive.gcv)
     check.integer.scalar(nprune, null.ok=TRUE)
     check.numeric.scalar(Adjust.endspan)
     check.boolean(Auto.linpreds)
@@ -227,7 +237,7 @@ earth.fit <- function(
                     minspan, endspan, newvar.penalty, fast.k, fast.beta,
                     linpreds, allowed,
                     Scale.y, Adjust.endspan, Auto.linpreds, Use.beta.cache,
-                    n.allowed.args, env, maxmem)
+                    n.allowed.args, env, maxmem, adaptive.gcv)
         termcond <- rv$termcond
         bx       <- rv$bx
         dirs     <- rv$dirs
@@ -394,6 +404,11 @@ earth.fit <- function(
     if(!is.null(offset))
         rv$offset <- offset
 
+    # FEAT-002: record the experimental flag on the object only when enabled,
+    # so that default (adaptive.gcv=FALSE) models are unchanged (no extra field).
+    if(adaptive.gcv)
+        rv$adaptive.gcv <- TRUE
+
     if(!is.null(glm.list)) {
         rv$glm.list         <- glm.list   # list of glm models, NULL if none
         rv$glm.coefficients <- glm.coefs  # matrix of glm coefs, nselected x nresp
@@ -415,7 +430,7 @@ forward.pass <- function(x, y, yw, weights, # must be double, but yw can be NULL
                          minspan, endspan, newvar.penalty, fast.k, fast.beta,
                          linpreds, allowed,
                          Scale.y, Adjust.endspan, Auto.linpreds, Use.beta.cache,
-                         n.allowed.args, env, maxmem)
+                         n.allowed.args, env, maxmem, adaptive.gcv=FALSE)
 {
     if(nrow(x) < 2)
         stop0("the x matrix must have at least two rows")
@@ -482,6 +497,7 @@ forward.pass <- function(x, y, yw, weights, # must be double, but yw can be NULL
         as.integer(Use.beta.cache),        # in: int* nUseBetaCache
         as.double(max(trace, 0)),          # in: double* Trace
         colnames(x),                       # in: char* sPredNames[]
+        as.integer(adaptive.gcv),          # in: int* AdaptiveGcv (FEAT-002)
         NAOK = TRUE, # we check for NAs etc. internally in C ForwardPass
         PACKAGE="earth")
 
