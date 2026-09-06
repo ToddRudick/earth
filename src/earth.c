@@ -2959,6 +2959,12 @@ static void ForwardPass(
         // complexity" input) rather than the model-wide averaged approximation
         // (nUsedTerms-1)/2.
         const int deltaTerms = IsTermPair ? 2 : 1;
+        // NOTE (deliberate simplification): a degree>=2 interaction hinge is
+        // charged the SAME single knot (deltaKnots=1) as a degree-1 hinge, even
+        // though an interaction hinge is arguably more complex.  This is a
+        // first-cut simplification, so the hinge-vs-linear divergence signal is
+        // correspondingly weaker for interaction (degree>=2) terms than for
+        // degree-1 hinges (visible in the ozone1 numbers of the OOS study).
         const int deltaKnots = (IsTermPair && !LinPredIsBest) ? 1 : 0;
 
         double CapScale = 1; // s: 1 if uncapped, in (0,1) if saturated

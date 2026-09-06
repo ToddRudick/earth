@@ -377,6 +377,46 @@ stopifnot(row.l$dRSSmax     >  row.h$dRSSmax)
 stopifnot(row.l$scale       >  row.h$scale)
 cat("linear (0-knot) x1 gets larger budget/CapScale than hinge (1-knot) x1: PASS\n")
 
+# --------------------------------------------------------------------------
+# THE regression guard for the EXPLICIT per-term knot charge (review Issue 1).
+#
+# The inequality assertions above are NOT sensitive to the specific Stage-1
+# change (linear-term knot charge 0.5 -> 0).  They are dominated by deltaTerms
+# (a hinge term-pair adds 2 terms vs 1 for a linear term), which the OLD
+# model-wide averaged (nUsedTerms-1)/2 formula ALREADY encoded via nUsedTerms;
+# so linear > hinge holds under BOTH the explicit and the averaged charge and
+# the inequalities cannot detect a revert.  To actually PIN the explicit
+# per-term knot charge we assert the forced-LINEAR dominant term's printed
+# Cost1 equals the EXPLICIT value and NOT the averaged value.
+#
+# For the first admitted term the pre-admission complexity is nOldUsedTerms = 1
+# (intercept only).  The forced-linear form has deltaTerms = 1 and
+# deltaKnots = 0, so
+#     EXPLICIT  Cost1 = (nOldUsedTerms + deltaTerms + Penalty*(0 + deltaKnots))/n
+#                     = (1 + 1 + Penalty*0)/n = 2/n            (Penalty drops out)
+# whereas the OLD averaged formula with nUsedTerms = 2 would give
+#     AVERAGED  Cost1 = (nUsedTerms + Penalty*(nUsedTerms-1)/2)/n
+#                     = (2 + Penalty*0.5)/n.
+# Because deltaKnots = 0 for the linear form, Penalty*deltaKnots = 0 and the
+# explicit value is 2/n for ANY penalty; the averaged charge, in contrast,
+# would add Penalty*0.5.  Asserting Cost1 == 2/n (tight tol) therefore FAILS
+# under the revert to the averaged approximation -- this is the real regression
+# guard for the budget-affecting Stage-1 change.
+n8      <- nrow(d8)
+# earth's default penalty: 2 for degree=1, 3 for degree>1 (this scenario is
+# degree=1, so penalty = 2).
+penalty8 <- 2
+cost1.explicit <- 2 / n8                             # (1 + 1 + penalty*0)/n
+cost1.averaged <- (2 + penalty8 * 0.5) / n8          # (nUsedTerms + P*(nUsed-1)/2)/n
+cat(sprintf("linear x1 Cost1: observed %.6g  explicit-expected %.6g  averaged(revert) %.6g\n",
+            row.l$Cost1, cost1.explicit, cost1.averaged))
+# the two formulas must be genuinely distinguishable (self-documenting intent)
+stopifnot(abs(cost1.explicit - cost1.averaged) > 1e-6)
+# and the shipped code must print the EXPLICIT value, not the averaged one
+stopifnot(isTRUE(all.equal(row.l$Cost1, cost1.explicit, tolerance = 1e-4)))
+stopifnot(abs(row.l$Cost1 - cost1.averaged) > 1e-4)
+cat("linear x1 Cost1 pins the EXPLICIT per-term knot charge (2/n), not the averaged value: PASS\n")
+
 # Cross-check the divergence via the retained effect on x1 in the fitted model:
 # the forced-linear representation should retain MORE of x1's variance than the
 # hinge representation once each is shrunk by its own CapScale.
