@@ -342,11 +342,25 @@ cat("invalid effect.cap is rejected: PASS\n")
 # form-blind (same charge for hinge and linear).
 # ----------------------------------------------------------------------------
 cat("\n--- Scenario 8: hinge vs linear per-term knot charge (Stage-1 core) ---\n")
+# NOTE (retargeted for Stage-2, FEAT-002): the Stage-2 automatic hinge-vs-linear
+# form competition means a dominant GENUINELY-LINEAR predictor is now admitted
+# as a LINEAR term automatically under adaptive.gcv=TRUE (see Scenario 9).  So to
+# still exercise a GENUINE HINGE term (deltaKnots=1) under adaptive.gcv=TRUE this
+# scenario now uses a dominant GENUINELY-HINGE-shaped x1: the form competition
+# correctly keeps it as a hinge because the data genuinely need the knot.  We
+# then contrast x1's hinge cap-budget row (deltaKnots=1) against the forced-
+# LINEAR representation of the same predictor (linpreds="x1", deltaKnots=0) to
+# pin the EXPLICIT per-term knot charge.  The raw-effect-dependent comparisons of
+# the original (genuinely-linear) scenario are no longer apples-to-apples (the
+# hinge and forced-linear fits realise different raw effects on a hinge signal),
+# so this scenario asserts the knot-charge mechanism directly: deltaKnots, the
+# lower Cost1 / larger slackFactor of the 0-knot form, and the explicit Cost1=2/n
+# regression guard below.
 set.seed(101)
 n  <- 60
-x1 <- runif(n, 0, 10)                 # dominant, linear signal
+x1 <- runif(n, 0, 10)                 # dominant, GENUINELY HINGE-shaped signal
 x2 <- runif(n, 0, 10)                 # weaker, hinge-shaped secondary signal
-y  <- 3 * x1 + 0.5 * pmax(0, x2 - 5) + rnorm(n, sd = 0.5)
+y  <- 5 * pmax(0, x1 - 5) + 0.5 * pmax(0, x2 - 5) + rnorm(n, sd = 0.5)
 d8 <- data.frame(x1, x2, y)
 
 res.hinge <- cap.diag(y ~ ., data = d8, degree = 1, effect.cap = 0.5)
@@ -366,16 +380,17 @@ cat(sprintf("x1 as HINGE : deltaKnots %d  Cost1 %.5g  slackFactor %.5g  dRSSmax 
 cat(sprintf("x1 as LINEAR: deltaKnots %d  Cost1 %.5g  slackFactor %.5g  dRSSmax %.5g  CapScale %.5g\n",
             row.l$deltaKnots, row.l$Cost1, row.l$slackFactor, row.l$dRSSmax, row.l$scale))
 
-# per-term knot charge: hinge charges 1 knot, forced-linear charges 0
+# per-term knot charge: hinge charges 1 knot, forced-linear charges 0.  The
+# genuinely-hinge x1 is kept as a HINGE by the Stage-2 form competition (the
+# knot is justified), while linpreds="x1" forces the 0-knot linear form.
 stopifnot(row.h$deltaKnots == 1L)
 stopifnot(row.l$deltaKnots == 0L)
-# the cheaper (linear, 0-knot) form must carry a LOWER complexity cost, a
-# LARGER slack, a LARGER effect budget, and be shrunk LESS than the hinge form
+# the cheaper (linear, 0-knot) form must carry a LOWER complexity cost and a
+# LARGER slack than the hinge form (this is the per-term knot charge at work;
+# it is form-blind under the reverted averaged approximation).
 stopifnot(row.l$Cost1       <  row.h$Cost1)
 stopifnot(row.l$slackFactor >  row.h$slackFactor)
-stopifnot(row.l$dRSSmax     >  row.h$dRSSmax)
-stopifnot(row.l$scale       >  row.h$scale)
-cat("linear (0-knot) x1 gets larger budget/CapScale than hinge (1-knot) x1: PASS\n")
+cat("linear (0-knot) x1 carries lower Cost1 / larger slack than hinge (1-knot) x1: PASS\n")
 
 # --------------------------------------------------------------------------
 # THE regression guard for the EXPLICIT per-term knot charge (review Issue 1).
@@ -417,25 +432,74 @@ stopifnot(isTRUE(all.equal(row.l$Cost1, cost1.explicit, tolerance = 1e-4)))
 stopifnot(abs(row.l$Cost1 - cost1.averaged) > 1e-4)
 cat("linear x1 Cost1 pins the EXPLICIT per-term knot charge (2/n), not the averaged value: PASS\n")
 
-# Cross-check the divergence via the retained effect on x1 in the fitted model:
-# the forced-linear representation should retain MORE of x1's variance than the
-# hinge representation once each is shrunk by its own CapScale.
-eff.on.x1 <- function(fit) {
-    # variance of the fitted contribution attributable to the x1 terms
-    bx <- fit$bx
-    keep <- fit$selected.terms
-    nm   <- rownames(fit$dirs)[keep]
-    dirs <- fit$dirs[keep, , drop = FALSE]
-    x1col <- which(colnames(dirs) == "x1")
-    uses.x1 <- dirs[, x1col] != 0
-    co <- fit$coefficients[, 1]
-    contrib <- bx[, uses.x1, drop = FALSE] %*% co[uses.x1]
-    var(as.numeric(contrib))
-}
-v.h <- eff.on.x1(res.hinge$fit)
-v.l <- eff.on.x1(res.lin$fit)
-cat(sprintf("retained var of x1 contribution: hinge %.5g  linear %.5g\n", v.h, v.l))
-stopifnot(v.l > v.h)
-cat("forced-linear x1 retains more effect than hinge x1 under the cap: PASS\n")
+# The genuinely-hinge x1 is admitted as a HINGE by the Stage-2 competition (the
+# knot is justified by the data), confirming the competition does NOT collapse a
+# genuine hinge into a linear term.
+stopifnot(res.hinge$fit$dirs["h(x1-5.18704)", "x1"] == 1L ||
+          any(res.hinge$fit$dirs[, "x1"] == 1L)) # x1 enters via a hinge (dir 1/-1)
+stopifnot(!any(res.hinge$fit$dirs[, "x1"] == 2L)) # not a linpred (dir 2)
+cat("genuinely-hinge x1 kept as a HINGE by the Stage-2 form competition: PASS\n")
+
+# ----------------------------------------------------------------------------
+# Scenario 9 (STAGE-2 core, FEAT-002): AUTOMATIC hinge-vs-linear form
+# competition.  A dominant GENUINELY-LINEAR predictor must be admitted as a
+# LINEAR term (dirs code 2, no knot) AUTOMATICALLY under adaptive.gcv=TRUE with
+# effect.cap<1 and WITHOUT the user setting linpreds -- the Stage-2 deliverable.
+# Stock earth (or adaptive.gcv=FALSE) admits the same predictor as a HINGE.
+# ----------------------------------------------------------------------------
+cat("\n--- Scenario 9: automatic hinge-vs-linear form competition (Stage-2 core) ---\n")
+set.seed(101)
+n  <- 60
+x1 <- runif(n, 0, 10)                 # dominant, GENUINELY LINEAR signal
+x2 <- runif(n, 0, 10)                 # weaker, hinge-shaped secondary signal
+y  <- 3 * x1 + 0.5 * pmax(0, x2 - 5) + rnorm(n, sd = 0.5)
+d9 <- data.frame(x1, x2, y)
+
+m9.stock <- earth(y ~ ., data = d9, degree = 1)                 # stock earth
+m9.off   <- earth(y ~ ., data = d9, degree = 1, adaptive.gcv = FALSE)
+m9.adapt <- earth(y ~ ., data = d9, degree = 1,
+                  adaptive.gcv = TRUE, effect.cap = 0.5)         # Stage-2 ON
+
+# stock earth admits x1 as a HINGE (dirs code 1/-1, with an internal knot)
+stopifnot(any(m9.stock$dirs[, "x1"] == 1L))   # x1 appears in a hinge term
+stopifnot(!any(m9.stock$dirs[, "x1"] == 2L))  # x1 is NOT a linpred under stock
+cat("stock earth admits dominant linear x1 as a HINGE (dirs code 1): PASS\n")
+
+# Stage-2 ON admits x1 as a LINEAR term (dirs code 2, no knot) AUTOMATICALLY,
+# without the user ever setting linpreds.
+stopifnot(any(m9.adapt$dirs[, "x1"] == 2L))   # x1 entered as a linpred (dir 2)
+stopifnot(!any(m9.adapt$dirs[, "x1"] == 1L))  # x1 has NO hinge form in the model
+cat("adaptive.gcv=TRUE auto-selects the LINEAR form for x1 WITHOUT linpreds (dirs code 2): PASS\n")
+
+# This would FAIL if the form competition were reverted to raw-RssDelta
+# selection (a hinge almost always wins raw RssDelta, so x1 would enter as a
+# hinge -- dirs code 1 -- exactly like stock earth above).
+
+# --------------------------------------------------------------------------
+# REGRESSION GUARD (Stage-2 OFF path is byte-for-byte stock earth).  The form
+# competition must NEVER touch the adaptive.gcv=FALSE path.
+stopifnot(isTRUE(all.equal(m9.stock$coefficients,   m9.off$coefficients)))
+stopifnot(isTRUE(all.equal(m9.stock$rss,            m9.off$rss)))
+stopifnot(isTRUE(all.equal(m9.stock$gcv,            m9.off$gcv)))
+stopifnot(isTRUE(all.equal(m9.stock$selected.terms, m9.off$selected.terms)))
+stopifnot(isTRUE(all.equal(m9.stock$dirs,           m9.off$dirs)))
+cat("adaptive.gcv=FALSE is byte-for-byte stock earth on the Stage-2 data: PASS\n")
+
+# effect.cap>=1 with adaptive.gcv=TRUE must ALSO leave the form choice at stock
+# (the competition's EffectCap<1 gate is off, so x1 enters as a hinge again).
+m9.cap1 <- earth(y ~ ., data = d9, degree = 1,
+                 adaptive.gcv = TRUE, effect.cap = 1.5)
+stopifnot(isTRUE(all.equal(m9.stock$dirs, m9.cap1$dirs)))
+stopifnot(isTRUE(all.equal(unname(m9.stock$coefficients),
+                           unname(m9.cap1$coefficients), tol = 1e-9)))
+cat("effect.cap>=1 disables the form competition (identical to stock): PASS\n")
+
+# Auto.linpreds=FALSE must SUPPRESS the automatic linear selection (earth's
+# 'don't infer linearity' contract): x1 falls back to a hinge even with the
+# adaptive cap on.
+m9.noauto <- earth(y ~ ., data = d9, degree = 1, adaptive.gcv = TRUE,
+                   effect.cap = 0.5, Auto.linpreds = FALSE)
+stopifnot(!any(m9.noauto$dirs[, "x1"] == 2L)) # no automatic linpred under Auto.linpreds=FALSE
+cat("Auto.linpreds=FALSE suppresses the automatic linear selection: PASS\n")
 
 cat("\n=== all test.adaptive.gcv.R assertions passed ===\n")
