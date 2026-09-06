@@ -302,6 +302,14 @@ edges of the data).  See also the \code{Adjust.endspan} argument.
      to the \code{degree}-1 new-form linear-vs-hinge pair, and a child
      interaction hinge is charged one knot.
 \cr
+     The competition is per-predictor while selection across predictors still
+     uses the raw (uncapped) effect.  A consequence is that when the linear
+     form wins a predictor's justified competition but its raw effect is not
+     the best across all predictors, a hinge that standard \code{earth} would
+     have admitted for that predictor can be suppressed.  This is the intended
+     behaviour of competing forms per predictor and then selecting across
+     predictors on raw effect.
+\cr
      This is an experimental statistical feature.
      With the default \code{adaptive.gcv=FALSE} the results are byte-for-byte
      identical to standard \code{earth}.  See \code{trace>=6} for per-step

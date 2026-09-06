@@ -38,7 +38,7 @@ model (`linear` = admitted as a linpred / dirs code 2; `hinge` = knot term). Row
 | (c) forced-linpreds cap=0.5 | linear | 0.8972716 | 0.7801802 | NA | 3 |
 | (c) forced-linpreds cap=0.9 | linear | 0.9480327 | 0.8460695 | NA | 3 |
 
-**Form verdict (effect.cap = 0.5): YES - at effect.cap=0.5 the AUTOMATIC competition admitted `Girth` as a LINEAR term (dirs code 2), on its own, reproducing the Stage-1 forced-linpreds form. Ordinary earth entered it as a hinge.**
+**Form verdict (effect.cap = 0.5): MIXED - at effect.cap=0.5 the AUTOMATIC competition admitted a LINEAR form (dirs code 2) for `Girth` ALONGSIDE a retained hinge on the same predictor, so the fit is a hybrid (linpred + hinge). This is NOT the Stage-1 forced-linpreds form, which is pure linear (a single linpred, no hinge). The competition found a linear form worth admitting, but a hinge for `Girth` also survived elsewhere in the forward pass. Ordinary earth entered it as a hinge.**
 
 **OOS (earth built-in CV RSq) at effect.cap=0.5: ordinary 0.9091, automatic-adaptive 0.8104 (-0.09865 vs ordinary), forced-linpreds 0.7802 (-0.1289 vs ordinary).**
 

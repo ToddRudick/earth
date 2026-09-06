@@ -244,14 +244,30 @@ run.dataset <- function(name, form, data, degree, dominant,
     a.cv   <- auto.caps[[key]]$cv.rsq
     f.cv   <- forced.caps[[key]]$cv.rsq
     o.cv   <- off$cv.rsq
-    auto.picked.linear <- a.form %in% c("linear", "mixed")
-    matches.forced <- auto.picked.linear   # forced form is linear by construction
+    ## The forced-linpreds reference (c) is PURE LINEAR by construction (a plain
+    ## linpred, no knot).  We only claim the automatic competition "reproduces"
+    ## that form when the automatic form is ALSO pure linear.  A "mixed" form
+    ## (the competition added a linpred ALONGSIDE a retained hinge for the same
+    ## predictor) is a genuinely different, richer form and must NOT be reported
+    ## as reproducing the forced-linpreds form (review Issues 1 and 2).
+    auto.pure.linear <- identical(a.form, "linear")
+    auto.mixed       <- identical(a.form, "mixed")
+    matches.forced   <- auto.pure.linear    # forced form is pure linear by construction
+    ## classification of the automatic outcome, kept separate from "matches"
+    auto.picked.linear <- auto.pure.linear   # ONLY a pure linear pick, for the summary count
 
-    verdict <- if (auto.picked.linear && matches.forced)
-        sprintf(paste0("YES - at effect.cap=%.2g the AUTOMATIC competition admitted `%s` as a LINEAR term ",
-                       "(dirs code 2), on its own, reproducing the Stage-1 forced-linpreds form. ",
-                       "Ordinary earth entered it as a %s."),
+    verdict <- if (auto.pure.linear)
+        sprintf(paste0("YES - at effect.cap=%.2g the AUTOMATIC competition admitted `%s` as a plain LINEAR term ",
+                       "(dirs code 2), on its own, reproducing the Stage-1 forced-linpreds form (pure linear, ",
+                       "no knot). Ordinary earth entered it as a %s."),
                 EC.FORM, dominant, off.form)
+    else if (auto.mixed)
+        sprintf(paste0("MIXED - at effect.cap=%.2g the AUTOMATIC competition admitted a LINEAR form (dirs code 2) ",
+                       "for `%s` ALONGSIDE a retained hinge on the same predictor, so the fit is a hybrid ",
+                       "(linpred + hinge). This is NOT the Stage-1 forced-linpreds form, which is pure linear ",
+                       "(a single linpred, no hinge). The competition found a linear form worth admitting, but ",
+                       "a hinge for `%s` also survived elsewhere in the forward pass. Ordinary earth entered it as a %s."),
+                EC.FORM, dominant, dominant, off.form)
     else
         sprintf(paste0("NO - at effect.cap=%.2g the automatic competition kept `%s` as a %s form ",
                        "(the same shape ordinary earth used: %s); the signal is not preferred as a plain ",
@@ -494,25 +510,31 @@ for (r in results) {
 
 ## --- interpretation ---
 n.auto.linear <- sum(vapply(results, function(r) isTRUE(r$auto.picked.linear), logical(1)))
+n.auto.mixed  <- sum(vapply(results, function(r) identical(r$auto.forms[[paste0("cap", EC.FORM)]], "mixed"), logical(1)))
 lines <- c(lines, "", "## Interpretation", "",
     sprintf(paste0("Across the %d datasets, the AUTOMATIC hinge-vs-linear competition ",
-                   "(adaptive.gcv=TRUE, no linpreds) admitted the dominant predictor as a LINEAR term ",
-                   "on its own in %d of them, reproducing the Stage-1 forced-linpreds form without any ",
-                   "user intervention."),
-            length(results), n.auto.linear),
+                   "(adaptive.gcv=TRUE, no linpreds) admitted the dominant predictor as a PURE LINEAR term ",
+                   "on its own (reproducing the Stage-1 forced-linpreds form exactly) in %d of them, and as a ",
+                   "MIXED form (a linpred admitted ALONGSIDE a retained hinge on the same predictor, which is ",
+                   "NOT the pure forced-linpreds form) in %d of them."),
+            length(results), n.auto.linear, n.auto.mixed),
     "",
-    "The behaviour splits cleanly by the true shape of the dominant signal:",
+    "The behaviour splits by the true shape of the dominant signal:",
     "",
-    "- **Genuinely near-linear dominant signal (trees / `Girth`):** the automatic",
-    "  competition DOES prefer the cheaper LINEAR form (`$dirs` code 2) at the",
-    "  tighter `effect.cap = 0.5`, exactly the form Stage 1 could only reach by",
-    "  forcing `linpreds`.  The Stage-2 mechanism works as designed here: it",
-    "  reproduces the forced-linpreds form on its own, and at that cap the",
-    "  automatic model actually scores a little HIGHER OOS than the forced-linpreds",
-    "  reference (see the CV RSq columns).  Note honestly, however, that on trees",
-    "  BOTH adaptive settings at `effect.cap = 0.5` score LOWER OOS than ordinary",
-    "  stock earth: the tight cap shrinks every term, and trees is a tiny 31-row",
-    "  dataset where stock earth's hinge on `Girth` already generalises well.  The",
+    "- **Genuinely near-linear dominant signal (trees / `Girth`):** at the tighter",
+    "  `effect.cap = 0.5` the automatic competition DOES admit a cheaper LINEAR",
+    "  form (`$dirs` code 2) for `Girth` on its own -- but a `Girth` hinge also",
+    "  survives elsewhere in the forward pass, so the automatic fit is **mixed**",
+    "  (a linpred PLUS a hinge on the same predictor, 4 terms), NOT the pure",
+    "  forced-linpreds form (a single `Girth` linpred, no hinge, 3 terms).  So the",
+    "  automatic competition finds the linear form worth admitting, but it does",
+    "  not reproduce the forced-linpreds form here: it adds a linpred alongside a",
+    "  retained hinge rather than replacing the hinge.  On OOS the mixed automatic",
+    "  fit scores a little HIGHER than the forced-linpreds reference at this cap",
+    "  (see the CV RSq columns).  Note honestly, however, that on trees BOTH",
+    "  adaptive settings at `effect.cap = 0.5` score LOWER OOS than ordinary stock",
+    "  earth: the tight cap shrinks every term, and trees is a tiny 31-row dataset",
+    "  where stock earth's hinge on `Girth` already generalises well.  The",
     "  regularisation, not the automatic form choice, is what costs OOS RSq here;",
     "  at the looser `effect.cap = 0.9` the automatic fit keeps the hinge and lands",
     "  much closer to stock.",
@@ -526,11 +548,14 @@ lines <- c(lines, "", "## Interpretation", "",
     "Whether the automatic linear form helps OOS is dataset dependent and is read",
     "directly from the CV RSq columns above; ordinary earth remains the default,",
     "and `effect.cap >= 1` recovers stock earth exactly.  The clean Stage-2",
-    "conclusion is about the FORM CHOICE, which is what Stage 2 changed: automatic",
-    "competition reproduces the Stage-1 forced-linpreds linear form for a genuinely",
-    "near-linear dominant predictor (trees) and correctly declines to for a",
-    "genuinely nonlinear one (ozone1).  Boundary datasets (mtcars, etitanic) keep",
-    "the hinge and show only small OOS movement, which the tables report directly.",
+    "conclusion is about the FORM CHOICE, which is what Stage 2 changed: for a",
+    "genuinely near-linear dominant predictor (trees) the automatic competition",
+    "admits a linear form for that predictor on its own -- though here it does so",
+    "ALONGSIDE a retained hinge (a mixed form), rather than reproducing the pure",
+    "forced-linpreds form -- and for a genuinely nonlinear one (ozone1) it",
+    "correctly keeps the hinge and does not add a linear form at all.  Boundary",
+    "datasets (mtcars, etitanic) keep the hinge and show only small OOS movement,",
+    "which the tables report directly.",
     "",
     "## Companion per-dataset files", "")
 for (r in results)

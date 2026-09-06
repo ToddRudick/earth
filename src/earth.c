@@ -1920,6 +1920,20 @@ static INLINE void FindPredGivenParent(
                     // ForwardPass cap block re-derives DeltaRssMax from the chosen
                     // form's deltaKnots after AddTermPair).  Only WHICH form is
                     // chosen changes here.
+                    //
+                    // BEHAVIORAL ASYMMETRY (intended, documented here so it is
+                    // not latent): the competition is per-predictor, but the
+                    // cross-predictor best is still selected on RAW effect.  When
+                    // the LINEAR form wins the per-predictor justified competition
+                    // (linWins) but its raw RssDeltaLin does NOT beat the current
+                    // cross-predictor best (*pBestRssDeltaForTerm), NEITHER form
+                    // updates the shared best -- so a hinge that stock earth would
+                    // have admitted for this predictor (its raw
+                    // RssDeltaForParPredPair exceeding the best) can be SUPPRESSED.
+                    // This follows directly from "compete per predictor, then
+                    // select across predictors on raw effect": the linear form won
+                    // locally, so the hinge is not offered.  It is a deliberate
+                    // consequence of the form competition, not a bug.
                     const double justifiedLin = JustifiedEffect(RssDeltaLin,
                                 1, 0, nUsedTerms, nKnotsOld,
                                 RssBeforeNewTerm, Penalty, EffectCap, nCases);

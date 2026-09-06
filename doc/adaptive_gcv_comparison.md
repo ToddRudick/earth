@@ -72,7 +72,7 @@ Stage-2 behaviour: `trees` has a genuinely near-linear dominant predictor
 
 ### trees (dominant `Girth`, genuinely near-linear)
 
-- **Automatic form choice:** YES - at effect.cap=0.5 the AUTOMATIC competition admitted `Girth` as a LINEAR term (dirs code 2), on its own, reproducing the Stage-1 forced-linpreds form. Ordinary earth entered it as a hinge.
+- **Automatic form choice:** MIXED - at effect.cap=0.5 the AUTOMATIC competition admitted a LINEAR form (dirs code 2) for `Girth` ALONGSIDE a retained hinge on the same predictor, so the fit is a hybrid (linpred + hinge). This is NOT the Stage-1 forced-linpreds form, which is pure linear (a single linpred, no hinge). The competition found a linear form worth admitting, but a hinge for `Girth` also survived elsewhere in the forward pass. Ordinary earth entered it as a hinge.
 - OOS (earth built-in CV RSq) at effect.cap=0.5: ordinary 0.9091, automatic-adaptive 0.8104 (-0.09865 vs ordinary), forced-linpreds 0.7802 (-0.1289 vs ordinary).
 - Ordinary earth entered `Girth` as a **hinge**; automatic adaptive (effect.cap=0.5) entered it as **mixed**; forced-linpreds entered it as **linear**.
 
@@ -128,7 +128,7 @@ Stage-2 behaviour: `trees` has a genuinely near-linear dominant predictor
 
 ## Stage-2 form verdict per dataset
 
-- **trees** (dominant `Girth`): YES - at effect.cap=0.5 the AUTOMATIC competition admitted `Girth` as a LINEAR term (dirs code 2), on its own, reproducing the Stage-1 forced-linpreds form. Ordinary earth entered it as a hinge.
+- **trees** (dominant `Girth`): MIXED - at effect.cap=0.5 the AUTOMATIC competition admitted a LINEAR form (dirs code 2) for `Girth` ALONGSIDE a retained hinge on the same predictor, so the fit is a hybrid (linpred + hinge). This is NOT the Stage-1 forced-linpreds form, which is pure linear (a single linpred, no hinge). The competition found a linear form worth admitting, but a hinge for `Girth` also survived elsewhere in the forward pass. Ordinary earth entered it as a hinge.
   - OOS (earth built-in CV RSq) at effect.cap=0.5: ordinary 0.9091, automatic-adaptive 0.8104 (-0.09865 vs ordinary), forced-linpreds 0.7802 (-0.1289 vs ordinary).
 - **ozone1** (dominant `temp`): NO - at effect.cap=0.5 the automatic competition kept `temp` as a hinge form (the same shape ordinary earth used: hinge); the signal is not preferred as a plain linear term here, so automatic competition does not diverge from stock for this predictor.
   - OOS (earth built-in CV RSq) at effect.cap=0.5: ordinary 0.7279, automatic-adaptive 0.7334 (+0.005435 vs ordinary), forced-linpreds 0.7306 (+0.002697 vs ordinary).
@@ -139,20 +139,24 @@ Stage-2 behaviour: `trees` has a genuinely near-linear dominant predictor
 
 ## Interpretation
 
-Across the 4 datasets, the AUTOMATIC hinge-vs-linear competition (adaptive.gcv=TRUE, no linpreds) admitted the dominant predictor as a LINEAR term on its own in 1 of them, reproducing the Stage-1 forced-linpreds form without any user intervention.
+Across the 4 datasets, the AUTOMATIC hinge-vs-linear competition (adaptive.gcv=TRUE, no linpreds) admitted the dominant predictor as a PURE LINEAR term on its own (reproducing the Stage-1 forced-linpreds form exactly) in 0 of them, and as a MIXED form (a linpred admitted ALONGSIDE a retained hinge on the same predictor, which is NOT the pure forced-linpreds form) in 1 of them.
 
-The behaviour splits cleanly by the true shape of the dominant signal:
+The behaviour splits by the true shape of the dominant signal:
 
-- **Genuinely near-linear dominant signal (trees / `Girth`):** the automatic
-  competition DOES prefer the cheaper LINEAR form (`$dirs` code 2) at the
-  tighter `effect.cap = 0.5`, exactly the form Stage 1 could only reach by
-  forcing `linpreds`.  The Stage-2 mechanism works as designed here: it
-  reproduces the forced-linpreds form on its own, and at that cap the
-  automatic model actually scores a little HIGHER OOS than the forced-linpreds
-  reference (see the CV RSq columns).  Note honestly, however, that on trees
-  BOTH adaptive settings at `effect.cap = 0.5` score LOWER OOS than ordinary
-  stock earth: the tight cap shrinks every term, and trees is a tiny 31-row
-  dataset where stock earth's hinge on `Girth` already generalises well.  The
+- **Genuinely near-linear dominant signal (trees / `Girth`):** at the tighter
+  `effect.cap = 0.5` the automatic competition DOES admit a cheaper LINEAR
+  form (`$dirs` code 2) for `Girth` on its own -- but a `Girth` hinge also
+  survives elsewhere in the forward pass, so the automatic fit is **mixed**
+  (a linpred PLUS a hinge on the same predictor, 4 terms), NOT the pure
+  forced-linpreds form (a single `Girth` linpred, no hinge, 3 terms).  So the
+  automatic competition finds the linear form worth admitting, but it does
+  not reproduce the forced-linpreds form here: it adds a linpred alongside a
+  retained hinge rather than replacing the hinge.  On OOS the mixed automatic
+  fit scores a little HIGHER than the forced-linpreds reference at this cap
+  (see the CV RSq columns).  Note honestly, however, that on trees BOTH
+  adaptive settings at `effect.cap = 0.5` score LOWER OOS than ordinary stock
+  earth: the tight cap shrinks every term, and trees is a tiny 31-row dataset
+  where stock earth's hinge on `Girth` already generalises well.  The
   regularisation, not the automatic form choice, is what costs OOS RSq here;
   at the looser `effect.cap = 0.9` the automatic fit keeps the hinge and lands
   much closer to stock.
@@ -166,11 +170,14 @@ The behaviour splits cleanly by the true shape of the dominant signal:
 Whether the automatic linear form helps OOS is dataset dependent and is read
 directly from the CV RSq columns above; ordinary earth remains the default,
 and `effect.cap >= 1` recovers stock earth exactly.  The clean Stage-2
-conclusion is about the FORM CHOICE, which is what Stage 2 changed: automatic
-competition reproduces the Stage-1 forced-linpreds linear form for a genuinely
-near-linear dominant predictor (trees) and correctly declines to for a
-genuinely nonlinear one (ozone1).  Boundary datasets (mtcars, etitanic) keep
-the hinge and show only small OOS movement, which the tables report directly.
+conclusion is about the FORM CHOICE, which is what Stage 2 changed: for a
+genuinely near-linear dominant predictor (trees) the automatic competition
+admits a linear form for that predictor on its own -- though here it does so
+ALONGSIDE a retained hinge (a mixed form), rather than reproducing the pure
+forced-linpreds form -- and for a genuinely nonlinear one (ozone1) it
+correctly keeps the hinge and does not add a linear form at all.  Boundary
+datasets (mtcars, etitanic) keep the hinge and show only small OOS movement,
+which the tables report directly.
 
 ## Companion per-dataset files
 
