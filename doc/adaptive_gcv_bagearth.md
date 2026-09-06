@@ -103,42 +103,79 @@ Observations:
   (0.8376 vs 0.8344) at a hair worse RMSE/Brier; the differences are within
   noise for a single holdout.
 
-## Study 3: guarded `caret::bagEarth` holdout (larger / wider datasets)
+## Study 3: guarded `caret::bagEarth` holdout (larger / wider datasets), FULL SIZE
 
-Run via `inst/slowtests/adaptive.gcv.large.comparison.R` with
-`options(adaptive.gcv.run.caret = TRUE, adaptive.gcv.smoke = TRUE)`. **SMOKE mode
-was used** because the full large study (solubility 951×228, spam 4601×57) is
-too slow to bag 20 times per setting within the run budget. SMOKE subsamples and
-reduces degree to keep bagging tractable; the exact configuration actually run
-was:
+**This section now reports FULL-SIZE numbers.** An earlier revision of this study
+ran the large/wide datasets only in SMOKE mode (subsampled rows, degree capped to
+1) because full-size bagging was thought too slow for the run budget. The
+full-size run has since been completed for **all four** datasets and the SMOKE
+rows are superseded by the real numbers below. The SMOKE numbers are retained at
+the end of this section for transparency (what changed and why).
 
-| dataset | rows (SMOKE) | predictors (SMOKE) | degree (SMOKE) | full-study size |
-| --- | --- | --- | --- | --- |
-| boston | 150 | 13 | 1 | 506 × 13, degree 2 |
-| spam | 300 | 57 | 1 | 4601 × 57, degree 1 |
-| solubility | 200 | 20 | 1 | 951 × 228, degree 2 |
-| synthetic_large | 200 | 12 | 1 | 4000 × 40, degree 2 |
+Methodology is the repo helper `caret.oos(form, data, degree, is.binary)` in
+`inst/slowtests/adaptive.gcv.large.comparison.R`, run at **full size / full
+degree** (i.e. `options(adaptive.gcv.run.caret = TRUE)` and **NOT**
+`adaptive.gcv.smoke`): a single **70/30 holdout** (`set.seed(2024)`) fitting
+`caret::bagEarth(x = train, y = train_y, B = 20, degree = <full degree>,
+adaptive.gcv = <FALSE/TRUE>)`, reporting holdout RMSE for feature OFF vs ON. The
+"ON" fit uses earth's **default `effect.cap = 0.9`** (the helper does not pass
+`effect.cap`). For the binary `spam` we additionally report holdout **accuracy**
+and **Brier** (bagged probability of class 1, threshold 0.5).
 
-Guarded `caret.oos()` on the SMOKE-subsampled data (`B = 20`, 70/30 holdout,
-`seed 2024`, adaptive ON at default `effect.cap = 0.9`):
+Full-size configuration actually run (all four completed at **B = 20, full
+degree**; no B reduction and no timeout was needed):
+
+| dataset | rows | predictors | degree | B | holdout | seed | runtime (OFF + ON) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| boston | 506 | 13 | 2 | 20 | 70/30 | 2024 | ~0.6 s (0.3 + 0.3) |
+| spam | 4601 | 57 | 1 | 20 | 70/30 | 2024 | ~3.4 s (1.8 + 1.6) |
+| solubility | 951 | 228 | 2 | 20 | 70/30 | 2024 | ~32 s (16.0 + 16.2) |
+| synthetic_large | 4000 | 40 | 2 | 20 | 70/30 | 2024 | ~15 s (7.7 + 7.5) |
+
+FULL-SIZE bagged holdout RMSE, feature OFF vs ON at default `effect.cap = 0.9`:
 
 | dataset | task | bagged RMSE OFF | bagged RMSE ON (cap 0.9) | verdict |
 | --- | --- | --- | --- | --- |
-| boston | regression | 3.72869 | 3.63064 | **helps** |
-| spam | classification | 0.57451 | 0.54797 | **helps** |
-| solubility | regression | 0.76396 | 0.79758 | hurts |
-| synthetic_large | regression | 3.02307 | 3.05149 | ~neutral (slightly worse) |
+| boston | regression | 3.38073 | 3.38955 | ~neutral (hair worse) |
+| spam | classification | 0.27107 | 0.27113 | neutral |
+| solubility | regression | 0.61196 | 0.61566 | hurts (slightly) |
+| synthetic_large | regression | 1.50073 | 1.54028 | hurts (slightly) |
 
-spam RMSE is on the 0/1 `type` response.
+spam RMSE is on the 0/1 `type` response. Binary detail for spam (holdout,
+`B = 20`, degree 1):
 
-**Honesty note on scope:** these large-dataset numbers are from **subsampled
-SMOKE data at degree 1**, not the full-size study. They are a valid bagged
-cross-check at that scale but should not be read as the full-dataset result. The
-full-size bagging was not run because of the runtime cost of `B = 20` bagged
-earth fits on 951×228 solubility and 4601×57 spam; this is a compute limitation,
-stated rather than hidden. Under the SMOKE configuration the disable invariant
-(`effect.cap = 1.0` == stock) still holds identically, as verified in Study 2's
-pattern and by the flow-through check.
+| setting | RMSE | accuracy | Brier |
+| --- | --- | --- | --- |
+| stock (OFF) | 0.27107 | 0.92754 | 0.07348 |
+| adaptive cap 0.9 (ON) | 0.27113 | 0.92681 | 0.07351 |
+
+All four differences at full size are small: the largest OOS RMSE swing is
+synthetic_large (1.501 → 1.540, about +2.6%) and solubility (0.612 → 0.616,
+about +0.6%); boston and spam move by well under 1% (spam accuracy 0.9275 →
+0.9268, one fewer correct on a 1380-row holdout). So at full size, default
+`effect.cap = 0.9` under bagging is **neutral-to-slightly-negative** on these
+four datasets.
+
+**What changed versus the earlier SMOKE numbers.** The SMOKE run (subsampled
+rows, degree capped to 1) previously reported:
+
+| dataset | SMOKE size / degree | SMOKE RMSE OFF | SMOKE RMSE ON | SMOKE verdict | FULL-SIZE verdict |
+| --- | --- | --- | --- | --- | --- |
+| boston | 150 × 13, deg 1 | 3.72869 | 3.63064 | helps | ~neutral (hair worse) |
+| spam | 300 × 57, deg 1 | 0.57451 | 0.54797 | helps | neutral |
+| solubility | 200 × 20, deg 1 | 0.76396 | 0.79758 | hurts | hurts (slightly) |
+| synthetic_large | 200 × 12, deg 1 | 3.02307 | 3.05149 | ~neutral | hurts (slightly) |
+
+The two SMOKE "helps" verdicts (boston, spam) **do not survive at full size**:
+they flatten to neutral. The SMOKE "hurts" on solubility and "~neutral / slightly
+worse" on synthetic_large **do agree in direction** with full size (both remain
+neutral-to-negative). The SMOKE numbers were a valid cross-check at that reduced
+scale but, as flagged at the time, should not be read as the full-dataset result;
+the full-size numbers above are the authoritative ones and supersede them.
+
+The disable invariant (`effect.cap = 1.0` == stock, `adaptive.gcv = FALSE` ==
+stock) continues to hold identically, as verified in Study 2's pattern and by the
+flow-through check; only the `effect.cap = 0.9` (ON) fits differ from stock.
 
 ## Overall verdict
 
@@ -146,17 +183,25 @@ pattern and by the flow-through check.
   be bagged; `adaptive.gcv = FALSE` and `effect.cap >= 1` reproduce bagged stock
   earth **exactly** (machine precision), so the feature stays safely default-OFF
   under bagging too.
-- Under bagging with the **default `effect.cap = 0.9`**, the adaptive cap was a
-  **net positive on 4 of 8 dataset runs** (ozone1, mtcars, boston-SMOKE,
-  spam-SMOKE), **neutral on 2** (etitanic, synthetic_large), and **worse on 2**
-  (trees, solubility-SMOKE). Result is **mixed and dataset-dependent**, reported
-  honestly.
+- Under bagging with the **default `effect.cap = 0.9`**, counting the small
+  datasets (Study 1) plus the **full-size** large datasets (Study 3), the
+  adaptive cap was a **net positive on 2 of 8 datasets** (ozone1, mtcars),
+  **neutral on 3** (etitanic, boston, spam), and **worse on 3** (trees,
+  solubility, synthetic_large). The two large datasets that looked like wins in
+  SMOKE mode (boston, spam) **flatten to neutral at full size**, so at the default
+  cap the feature is **mixed-leaning-neutral and dataset-dependent**, reported
+  honestly, negatives and neutrals included. The clear default-`0.9` wins remain
+  the genuinely-nonlinear small frames (ozone1, mtcars).
 - The tighter `effect.cap = 0.5` amplifies both directions: bigger gains where
   it helps (ozone1, mtcars) and a clear loss on the tiny trees holdout. The knob
   behaves as designed (smaller = more aggressive).
 - Bagging broadly agrees with earth's built-in CV on the *direction* of the
   effect per dataset (helps on ozone1/mtcars, hurts on trees), which is
-  reassuring for the feature's characterisation.
+  reassuring for the feature's characterisation. At full size the large-dataset
+  bagged directions also line up with the earlier SMOKE directions on solubility
+  (hurts) and synthetic_large (neutral-to-worse); the only shifts are boston and
+  spam moving from a SMOKE "helps" to a full-size "neutral", i.e. the full-size
+  result is more conservative than SMOKE, not contradictory in sign.
 
 ## Reproducing
 
@@ -165,11 +210,17 @@ pattern and by the flow-through check.
 options(adaptive.gcv.run.caret = TRUE)
 source("inst/slowtests/adaptive.gcv.comparison.R")
 
-# larger/wider datasets in SMOKE mode (Study 3)
-options(adaptive.gcv.run.caret = TRUE, adaptive.gcv.smoke = TRUE)
+# larger/wider datasets at FULL size (Study 3): enable the caret path and do
+# NOT set adaptive.gcv.smoke, so caret.oos() runs at full rows / full degree.
+options(adaptive.gcv.run.caret = TRUE)
 source("inst/slowtests/adaptive.gcv.large.comparison.R")
 ```
 
-Runtime: each small-dataset bagEarth pair (B = 20) completes in seconds; the full
-non-SMOKE large study under bagging is minutes-to-slow on solubility/spam and was
-not run at full size here.
+Runtime (measured): each small-dataset bagEarth pair (`B = 20`) completes in
+seconds. The **full-size** large study under bagging is fast in practice on this
+build: boston ~0.6 s, spam ~3.4 s, synthetic_large ~15 s, and the wide
+solubility (951 × 228, degree 2) ~32 s for the OFF + ON pair, all at `B = 20`,
+no B reduction or timeout needed. (The Study 3 caret block reports RMSE only; the
+spam accuracy/Brier here were obtained by the same `caret.oos` methodology,
+`B = 20`, 70/30 holdout, seed 2024, adaptive ON at default `effect.cap = 0.9`,
+with the bagged class-1 probability thresholded at 0.5.)
