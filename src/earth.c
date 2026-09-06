@@ -2863,6 +2863,19 @@ static void ForwardPass(
         RSq = 1 - Rss / RssNull;
         RSqDelta = MaybeZero(RSq - OldRSq);
 
+        // Diagnostics-only instrumentation (trace >= 6, well above any level
+        // used by the test suite).  Reports, for each accepted term, the state
+        // that the Adaptive GCV Effect Cap (FEAT-002) will reason about: the
+        // current RSS, the (unconstrained) RssDelta just realized, the current
+        // effective complexity (nUsedTerms), and the current GCV.  This is a
+        // read-only probe: it does not modify Rss, RssDelta, nUsedTerms, Gcv,
+        // or any model state, so it cannot change numeric output at any trace
+        // level.
+        tprintf(6,
+            "effectcap diag: iTerm %-3d RSS %-12.5g RssDelta %-12.5g "
+            "complexity(nUsedTerms) %-3d GCV %-12.5g\n",
+            nTerms, Rss, RssDelta, nUsedTerms, Gcv);
+
         PrintForwardStep(nTerms, nUsedTerms, iBestCase, iBestPred,
             iBestParent, iBestParent < 0? 0: nDegree[iBestParent]+1,
             RSq, RSqDelta, Gcv, GcvNull,
