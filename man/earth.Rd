@@ -291,12 +291,23 @@ edges of the data).  See also the \code{Adjust.endspan} argument.
      (\bold{Experimental}.)
      Default is \code{0.9}.  Used only when \code{adaptive.gcv=TRUE}.
 \cr
-     The maximum fraction of the total sum of squares (i.e. the maximum
-     \eqn{\Delta R^2}) that any single forward-pass term is allowed to
-     explain.  Effect beyond this is held back for other terms.
-     \code{effect.cap >= 1} means the cap can never bind, reproducing
-     standard \code{earth}; smaller values redistribute more signal away
-     from dominant terms.  Must be positive.
+     A \emph{slack-strength} knob controlling how far below its
+     unconstrained least-squares effect each forward-pass term is pushed
+     toward the effect that merely pays for its own complexity.  The cap is
+     \emph{adaptive} and \emph{per-term-complexity-aware}: for each admitted
+     term the allowed incremental effect is interpolated between the GCV
+     break-even reduction (the floor: the smallest RSS drop that does not
+     increase GCV, so a barely-justified term is never over-capped) and the
+     full unconstrained effect (the ceiling).  The interpolation slack shrinks
+     as the model consumes complexity, so regularization strengthens as the
+     model grows.  The complexity charge is computed \emph{per term} using an
+     explicit knot count: a linear (or \code{linpreds}) term adds no knot, a
+     hinge term adds one knot, so at the same unconstrained effect a hinge term
+     (more complex) is shrunk more than a linear term.
+\cr
+     \code{effect.cap >= 1} means the cap can never bind, reproducing standard
+     \code{earth} byte-for-byte; smaller values apply stronger shrinkage and
+     redistribute more signal away from dominant terms.  Must be positive.
 }
 \item{linpreds}{
      Index vector specifying which predictors should enter linearly, as in \code{\link{lm}}.

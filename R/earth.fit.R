@@ -94,12 +94,17 @@ earth.fit <- function(
                             # so the un-capped terms absorb the residual a dominant term
                             # is not allowed to explain.  Default FALSE reproduces stock
                             # earth exactly (byte-for-byte).  See man/earth.Rd.
-    effect.cap     = 0.9,   # EXPERIMENTAL (FEAT-002): cap strength, used only when
-                            # adaptive.gcv=TRUE.  Maximum fraction of the total sum of
-                            # squares (delta-R^2) that any single forward-pass term may
-                            # explain; effect beyond this is held back for other terms.
-                            # effect.cap >= 1 => cap never binds (~ stock earth);
-                            # smaller => more aggressive redistribution of signal.
+    effect.cap     = 0.9,   # EXPERIMENTAL (FEAT-002, FEAT-004): slack-strength knob,
+                            # used only when adaptive.gcv=TRUE.  The cap is adaptive and
+                            # per-term-complexity-aware: each term's allowed incremental
+                            # effect is interpolated between its GCV break-even reduction
+                            # (floor) and its unconstrained OLS effect (ceiling), with the
+                            # slack shrinking as model complexity grows.  Complexity is
+                            # charged per term with an explicit knot count (linear/linpreds
+                            # term = 0 knots, hinge = 1 knot), so a hinge is shrunk more
+                            # than a linear term of equal effect.  effect.cap >= 1 => cap
+                            # never binds (byte-for-byte stock earth); smaller => stronger
+                            # shrinkage / more redistribution of signal.  Must be positive.
 
                             # Following affect pruning only, not forward pass
                             # If you change these, update prune.only.args too!

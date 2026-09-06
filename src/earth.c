@@ -2862,6 +2862,14 @@ static void ForwardPass(
     }
     #define yHatCap_(i,iResp) yHatCap[(i) + (iResp)*(nCases)]
     int nUsedTerms = 1;     // number of used basis terms including intercept, for GCV calc
+    // Running EXPLICIT knot count of the current model (FEAT-004).  The cap's
+    // per-term complexity charge (below) uses this instead of the model-wide
+    // averaged approximation (nUsedTerms-1)/2, so the budget reflects THIS
+    // candidate's true marginal complexity: a linear/linpreds term adds 0
+    // knots, a hinge term adds 1 knot.  It is incremented by deltaKnots on each
+    // accepted step and is only read on the DoCap path (no effect when DoCap is
+    // false, so the stock trajectory is untouched).
+    int nKnotsOld = 0;
     double Gcv = 0, GcvNull = GetGcv(nUsedTerms, nCases, RssNull, Penalty);
     PrintForwardProlog(nCases, nPreds, nMaxTerms, sPredNames, yw != NULL);
 #if FAST_MARS
@@ -2941,33 +2949,87 @@ static void ForwardPass(
         // DeltaRssMax) applied per orthonormal direction.  We then accumulate
         // only s*bhat_k*bxOrth[,k] into yHatCap, holding back the un-justified
         // effect of this (dominant) term.
+        // FEAT-004: per-term marginal complexity of the just-admitted term.
+        // A linear/linpreds term (LinPredIsBest, no knot) adds deltaTerms=1 and
+        // deltaKnots=0; a genuine hinge term-pair adds deltaTerms=2 and
+        // deltaKnots=1 (exactly one knot).  These match how nUsedTerms was
+        // incremented above.  We use this EXPLICIT per-term knot charge in the
+        // budget's complexity cost Cost1 below, so the cap reflects THIS
+        // candidate's true marginal complexity (the spec's "candidate
+        // complexity" input) rather than the model-wide averaged approximation
+        // (nUsedTerms-1)/2.
+        const int deltaTerms = IsTermPair ? 2 : 1;
+        const int deltaKnots = (IsTermPair && !LinPredIsBest) ? 1 : 0;
+
         double CapScale = 1; // s: 1 if uncapped, in (0,1) if saturated
+        double Cost1 = 0, BreakEven = 0, slackFactor = 1; // trace-only diagnostics
         if(DoCap && iBestCase >= 0 && RssDelta > 0) {
-            // Effect budget expressed as a cap on the term's incremental
-            // delta-R^2 = RssDelta / TSS (the spec's preferred, scale-free
-            // measure).  A single term may realise at most EffectCap of the
-            // TOTAL sum of squares; effect exceeding that is held back so the
-            // other (un-capped) terms can absorb it in the final constrained
-            // fit.  This is adaptive in the natural sense that the cap is a
-            // fraction of the WHOLE signal, so early dominant terms are trimmed
-            // while later terms (whose delta-R^2 is already small) are untouched.
-            //   EffectCap >= 1  -> cap never binds -> stock earth.
-            //   EffectCap  < 1  -> no single term may explain more than that
-            //                      fraction of total variance.
-            // The budget is additionally never allowed below the GCV break-even
-            // reduction (the smallest RSS drop that does not increase GCV), so a
-            // term that is only just worth admitting is never capped below the
-            // level at which it pays for its own complexity.
-            const double TSS = RssNull;
-            double DeltaRssMax = EffectCap * TSS;
-            const double nKnots1 = ((double)nUsedTerms - 1) / 2;
-            const double Cost1   = (nUsedTerms + Penalty * nKnots1) / nCases;
-            if(Cost1 < 1) {
-                const double GcvOld = GetGcv(nOldUsedTerms, nCases, Rss, Penalty);
-                const double RssBreakEven = GcvOld * nCases * sq(1 - Cost1);
-                const double BreakEven = Rss - RssBreakEven; // min reduction that keeps GCV flat
-                if(DeltaRssMax < BreakEven)
-                    DeltaRssMax = BreakEven;
+            // ADAPTIVE, per-term-complexity-aware effect budget (spec Strategy 2,
+            // "Incremental GCV budget").  The maximum justified incremental
+            // effect DeltaRssMax lies BETWEEN two anchors:
+            //
+            //   floor  = BreakEven : the smallest RSS reduction that does NOT
+            //            increase GCV once this term's complexity is charged.  A
+            //            term always keeps at least the effect that pays for its
+            //            own complexity, so a barely-justified term is never
+            //            over-capped (a NAIVE hard cap at break-even was found to
+            //            over-cap everything and collapse RSq -- see FEAT-002
+            //            findings; that is why we interpolate with slack rather
+            //            than clamp at the floor).
+            //   ceiling = RssDelta : the unconstrained OLS effect; we never
+            //            charge more than the term actually explains.
+            //
+            // We interpolate:  DeltaRssMax = BreakEven + slackFactor*(RssDelta -
+            // BreakEven), where slackFactor in [0,1] shrinks as the model's
+            // per-term complexity cost rises and grows with effect.cap:
+            //
+            //   costFrac    = clamp(Cost1, 0, 1)                (rises toward 1
+            //                 as the model consumes complexity)
+            //   gamma       = 1/EffectCap - 1                   (>=0 for
+            //                 EffectCap in (0,1]; 0 at EffectCap==1)
+            //   slackFactor = (1 - costFrac)^gamma
+            //
+            // Properties (spec-required):
+            //   (i)   EffectCap >= 1 => gamma <= 0 => slackFactor == 1 =>
+            //         DeltaRssMax == RssDelta => CapScale == 1 => stock earth
+            //         (enforced exactly by the EffectCap>=1 fast-path below).
+            //   (ii)  For a given EffectCap<1, a HINGE term (deltaKnots=1) has a
+            //         higher Cost1 than a LINEAR term (deltaKnots=0) with the
+            //         same OLS effect, hence a larger costFrac, a SMALLER
+            //         slackFactor, and a SMALLER DeltaRssMax: the hinge is shrunk
+            //         more than the cheaper linear form.
+            //   (iii) DeltaRssMax is clamped to [0, RssDelta] and never negative.
+            //   (iv)  As model complexity grows (costFrac up), slackFactor
+            //         shrinks => progressively stronger regularization (the
+            //         spec's central hypothesis).
+            //
+            // Cost1 uses the EXPLICIT per-term knot charge (deltaTerms/deltaKnots
+            // and the running nKnotsOld) -- NOT (nUsedTerms-1)/2.
+            Cost1 = (nOldUsedTerms + deltaTerms
+                        + Penalty * (nKnotsOld + deltaKnots)) / nCases;
+            const double GcvOld = GetGcv(nOldUsedTerms, nCases, Rss, Penalty);
+            const double RssBreakEven = (Cost1 < 1)
+                        ? GcvOld * nCases * sq(1 - Cost1) : 0;
+            BreakEven = Rss - RssBreakEven; // min reduction that keeps GCV flat
+            if(BreakEven < 0)
+                BreakEven = 0;
+            if(BreakEven > RssDelta)
+                BreakEven = RssDelta;       // floor can never exceed the ceiling
+
+            double DeltaRssMax;
+            if(EffectCap >= 1) {
+                // Fast-path exact stock reproduction: cap never binds.
+                slackFactor = 1;
+                DeltaRssMax = RssDelta;
+            } else {
+                double costFrac = Cost1;
+                if(costFrac < 0) costFrac = 0;
+                if(costFrac > 1) costFrac = 1;
+                const double gamma = 1 / EffectCap - 1; // > 0 for EffectCap<1
+                slackFactor = pow(1 - costFrac, gamma);
+                if(slackFactor < 0) slackFactor = 0;
+                if(slackFactor > 1) slackFactor = 1;
+                DeltaRssMax = BreakEven + slackFactor * (RssDelta - BreakEven);
             }
             if(DeltaRssMax < 0)
                 DeltaRssMax = 0;
@@ -2981,8 +3043,10 @@ static void ForwardPass(
                 const double bmax = CapScale * bhat;         // capped coef
                 tprintf(6,
                     "effectcap CAP: iTerm %-3d bhat %-12.5g dRSS(ols) %-12.5g "
-                    "dRSSmax %-12.5g bmax %-12.5g scale %-12.5g\n",
-                    nTerms, bhat, RssDelta, DeltaRssMax, bmax, CapScale);
+                    "dRSSmax %-12.5g bmax %-12.5g scale %-12.5g deltaKnots %-2d "
+                    "Cost1 %-12.5g BreakEven %-12.5g slackFactor %-12.5g\n",
+                    nTerms, bhat, RssDelta, DeltaRssMax, bmax, CapScale,
+                    deltaKnots, Cost1, BreakEven, slackFactor);
             }
 
             // Accumulate this term's (possibly scaled) contribution into the
@@ -3020,8 +3084,14 @@ static void ForwardPass(
         // level.
         tprintf(6,
             "effectcap diag: iTerm %-3d RSS %-12.5g RssDelta(ols) %-12.5g "
-            "capScale %-12.5g complexity(nUsedTerms) %-3d GCV %-12.5g\n",
-            nTerms, Rss, RssDelta, CapScale, nUsedTerms, Gcv);
+            "capScale %-12.5g complexity(nUsedTerms) %-3d GCV %-12.5g "
+            "deltaKnots %-2d Cost1 %-12.5g BreakEven %-12.5g slackFactor %-12.5g\n",
+            nTerms, Rss, RssDelta, CapScale, nUsedTerms, Gcv,
+            deltaKnots, Cost1, BreakEven, slackFactor);
+
+        // FEAT-004: advance the running explicit knot count now that the term
+        // has been admitted (used by the cap budget on the next iteration).
+        nKnotsOld += deltaKnots;
 
         PrintForwardStep(nTerms, nUsedTerms, iBestCase, iBestPred,
             iBestParent, iBestParent < 0? 0: nDegree[iBestParent]+1,

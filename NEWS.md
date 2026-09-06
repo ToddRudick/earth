@@ -9,11 +9,19 @@
   predictive effect (delta-R^2) is capped at the amount justified by the
   current GCV/complexity tradeoff.  The per-term caps are saved during the
   forward pass and applied as a constrained final fit, so the un-capped terms
-  absorb the residual a dominant term is not allowed to explain.  `effect.cap`
-  is the maximum fraction of the total sum of squares any single term may
-  explain (`effect.cap >= 1` reproduces stock `earth`).  The cap is on the
-  predictive effect (not the raw coefficient) and is measured conditional on
-  the current model, so it is scale-invariant.  With the default
+  absorb the residual a dominant term is not allowed to explain.  The cap is
+  now GCV/complexity-adaptive: for each admitted term the allowed incremental
+  effect is interpolated between the GCV break-even reduction (floor) and the
+  unconstrained least-squares effect (ceiling), with the interpolation slack
+  shrinking as the model consumes complexity, so regularization strengthens as
+  the model grows.  The complexity charge is computed per term with an explicit
+  knot count (a linear or `linpreds` term adds no knot, a hinge term adds one
+  knot) rather than a model-wide averaged approximation, so at equal effect a
+  hinge term is shrunk more than the cheaper linear form.  `effect.cap` is now
+  a slack-strength knob controlling how far below its OLS effect a term is
+  pushed toward its break-even (`effect.cap >= 1` reproduces stock `earth`).
+  The cap is on the predictive effect (not the raw coefficient) and is measured
+  conditional on the current model, so it is scale-invariant.  With the default
   `adaptive.gcv=FALSE` the results are byte-for-byte identical to previous
   versions of `earth`.
 
