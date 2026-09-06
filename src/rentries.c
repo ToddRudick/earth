@@ -40,7 +40,7 @@ static R_CMethodDef cEntries[] = {
   {NULL,                   NULL,                            0, NULL}
 };
 static R_CallMethodDef callEntries[] = {
-  {"ForwardPassR", (DL_FUNC)&ForwardPassR, 32},
+  {"ForwardPassR", (DL_FUNC)&ForwardPassR, 34},
   {NULL,           NULL,                    0}
 };
 extern void F77_SUB(bakwrd)(

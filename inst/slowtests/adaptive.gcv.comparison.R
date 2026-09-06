@@ -376,11 +376,16 @@ for (r in bin) {
         r$bag$oos_acc[1], r$bag$oos_acc[2]))
 }
 interp <- c(interp, "",
-    "The adaptive cap is a conservative, default-off forward-pass modification: it charges",
-    "each admitted term only the GCV-justified share of the residual reduction, which limits",
-    "how much any single term dominates the forward search. Whether that conservatism helps or",
-    "hurts generalization is dataset dependent, as the table above shows; on these established",
-    "examples the effect is generally small, and ordinary earth remains the default.",
+    "The adaptive cap is a conservative, default-off modification. Terms are selected by the",
+    "ordinary MARS forward pass, but each term's predictive effect (delta-R^2) is capped at",
+    sprintf("`effect.cap` (default %.2g, the maximum fraction of the total sum of squares any", 0.9),
+    "single term may explain); the saved caps are then applied as a *constrained* final fit,",
+    "so the un-capped terms absorb the residual a dominant term is not allowed to explain.",
+    "Because a strong term is deliberately held below its unconstrained least-squares effect,",
+    "the adaptive model is more heavily regularised in-sample; whether that regularisation",
+    "helps or hurts out-of-sample generalisation is dataset dependent, as the table above",
+    "shows. Ordinary earth remains the default. The `effect.cap` argument tunes the strength:",
+    "`effect.cap >= 1` recovers stock earth, smaller values redistribute more signal.",
     "",
     "## Companion per-dataset files", "")
 for (r in results)

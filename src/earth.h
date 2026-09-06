@@ -51,7 +51,9 @@ SEXP ForwardPassR(              // for use by R
     SEXP SEXP_nUseBetaCache,    // in: 1 to use the beta cache, for speed
     SEXP SEXP_Trace,            // in: 0 none 1 overview 2 forward 3 pruning 4 more pruning
     SEXP SEXP_sPredNames,       // in: predictor names in trace printfs
-    SEXP SEXP_AdaptiveGcv);     // in: 1 to enable the experimental Adaptive GCV Effect Cap (FEAT-002)
+    SEXP SEXP_AdaptiveGcv,      // in: 1 to enable the experimental Adaptive GCV Effect Cap (FEAT-002)
+    SEXP SEXP_EffectCap,        // in: cap strength (max delta-R^2 a single term may explain)
+    SEXP SEXP_yHatCap);         // out: nCases x nResp capped forward fit (AdaptiveGcv only)
 
 void EvalSubsetsUsingXtxR(      // for use by R
     double        PruneTerms[], // out: specifies which cols in bx are in best set

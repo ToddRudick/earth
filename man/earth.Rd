@@ -45,7 +45,7 @@ See the package vignette
     nk = min(200, max(20, 2 * ncol(x))) + 1,
     thresh = 0.001, minspan = 0, endspan = 0,
     newvar.penalty = 0, fast.k = 20, fast.beta = 1,
-    adaptive.gcv = FALSE,
+    adaptive.gcv = FALSE, effect.cap = 0.9,
     linpreds = FALSE, allowed = NULL,
     nprune = NULL, Object = NULL,
     Scale.y = NULL, Adjust.endspan = 2, Auto.linpreds = TRUE,
@@ -259,24 +259,44 @@ edges of the data).  See also the \code{Adjust.endspan} argument.
      (\bold{Experimental}.)
      Default is \code{FALSE}.
 \cr
-     When \code{TRUE}, enable the \emph{Adaptive GCV Effect Cap} in the
-     forward pass.  At each forward step, the incremental predictive effect
-     (the reduction in RSS) that a newly admitted term is allowed to
-     contribute is capped at the amount justified by the current
-     GCV/complexity tradeoff (the largest RSS reduction that does not
-     increase the model's GCV once the term's complexity is charged).
-     A candidate whose unconstrained least-squares effect exceeds this
-     budget is admitted but only its justified effect is charged against
-     the working RSS/GCV budget, so the forward search leaves the remaining
-     signal available for other terms to compete.  This is intended to stop
-     one dominant term from consuming a disproportionate share of the
-     complexity budget in a single step.  The effect (delta-RSS), not the
-     raw coefficient, is capped, and it is measured conditional on the
-     current model, so the behaviour is invariant to rescaling a predictor.
+     When \code{TRUE}, enable the \emph{Adaptive GCV Effect Cap}.
+     Terms are selected by the ordinary MARS forward pass, but each term's
+     incremental predictive effect (its reduction in RSS, equivalently its
+     \eqn{\Delta R^2}) is capped at the amount justified by the current
+     GCV/complexity tradeoff.  A term whose unconstrained least-squares
+     effect exceeds the cap is admitted but \emph{saturated}: the amount by
+     which it exceeds the cap is held back.  The per-term caps are saved
+     during the forward pass and applied as a \emph{constrained} final fit
+     (the pruned basis is regressed on the capped forward fit rather than on
+     the raw response), so the un-capped terms absorb the residual that a
+     dominant term is not allowed to explain.  This is intended to stop one
+     dominant term from consuming a disproportionate share of the signal and
+     to give other terms an opportunity to contribute.
+\cr
+     The cap is on predictive \emph{effect} (\eqn{\Delta R^2}), not the raw
+     coefficient, and is measured conditional on the current model, so the
+     behaviour is invariant to rescaling a predictor.  The cap strength is
+     controlled by \code{effect.cap}.
+\cr
+     The cap is applied only on the ordinary (unweighted, non-\code{glm})
+     fitting path; with case weights the model is fit as if
+     \code{adaptive.gcv=FALSE}.
 \cr
      This is an experimental statistical feature.
-     With the default \code{adaptive.gcv=FALSE} the results are identical
-     to standard \code{earth}.  See \code{trace>=6} for per-step diagnostics.
+     With the default \code{adaptive.gcv=FALSE} the results are byte-for-byte
+     identical to standard \code{earth}.  See \code{trace>=6} for per-step
+     cap diagnostics.
+}
+\item{effect.cap}{
+     (\bold{Experimental}.)
+     Default is \code{0.9}.  Used only when \code{adaptive.gcv=TRUE}.
+\cr
+     The maximum fraction of the total sum of squares (i.e. the maximum
+     \eqn{\Delta R^2}) that any single forward-pass term is allowed to
+     explain.  Effect beyond this is held back for other terms.
+     \code{effect.cap >= 1} means the cap can never bind, reproducing
+     standard \code{earth}; smaller values redistribute more signal away
+     from dominant terms.  Must be positive.
 }
 \item{linpreds}{
      Index vector specifying which predictors should enter linearly, as in \code{\link{lm}}.

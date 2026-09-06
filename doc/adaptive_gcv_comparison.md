@@ -31,9 +31,9 @@ several established datasets, measuring **out-of-sample** predictive power.
 | ozone1 | ordinary (OFF) | 4.097 | 0.7051 |
 | ozone1 | adaptive (ON) | 4.097 | 0.7051 |
 | trees | ordinary (OFF) | 2.807 | 0.9575 |
-| trees | adaptive (ON) | 2.807 | 0.9575 |
+| trees | adaptive (ON) | 4.279 | 0.9013 |
 | mtcars | ordinary (OFF) | 2.781 | 0.5736 |
-| mtcars | adaptive (ON) | 2.57 | 0.6359 |
+| mtcars | adaptive (ON) | 2.773 | 0.5763 |
 
 ### Classification (etitanic$survived, held-out test set)
 
@@ -49,24 +49,29 @@ several established datasets, measuring **out-of-sample** predictive power.
 | ozone1 | ordinary (OFF) | 0.8254 | 0.7279 | NA |
 | ozone1 | adaptive (ON) | 0.8254 | 0.7279 | NA |
 | trees | ordinary (OFF) | 0.9742 | 0.9091 | NA |
-| trees | adaptive (ON) | 0.9742 | 0.9091 | NA |
+| trees | adaptive (ON) | 0.9128 | 0.8225 | NA |
 | mtcars | ordinary (OFF) | 0.8602 | 0.6485 | NA |
-| mtcars | adaptive (ON) | 0.8602 | 0.6455 | NA |
+| mtcars | adaptive (ON) | 0.8602 | 0.6485 | NA |
 | etitanic | ordinary (OFF) | 0.439 | 0.401 | 0.7932 |
 | etitanic | adaptive (ON) | 0.439 | 0.401 | 0.7932 |
 
 ## Interpretation
 
-- **ozone1** (regression, degree 2): adaptive.gcv is NEUTRAL for out-of-sample RMSE (ordinary 4.097 vs adaptive 4.097, delta +0).
-- **trees** (regression, degree 1): adaptive.gcv is NEUTRAL for out-of-sample RMSE (ordinary 2.807 vs adaptive 2.807, delta +0).
-- **mtcars** (regression, degree 1): adaptive.gcv IMPROVES out-of-sample RMSE (ordinary 2.781 vs adaptive 2.57, delta -0.2111).
-- **etitanic** (classification, degree 2): adaptive.gcv is NEUTRAL for out-of-sample Brier score (ordinary 0.1184 vs adaptive 0.1184, delta +0); OOS accuracy ordinary 0.8344 vs adaptive 0.8344.
+- **ozone1** (regression, degree 2): adaptive.gcv is NEUTRAL for out-of-sample RMSE (ordinary 4.097 vs adaptive 4.097, delta +1.776e-15).
+- **trees** (regression, degree 1): adaptive.gcv HURTS out-of-sample RMSE (ordinary 2.807 vs adaptive 4.279, delta +1.472).
+- **mtcars** (regression, degree 1): adaptive.gcv IMPROVES out-of-sample RMSE (ordinary 2.781 vs adaptive 2.773, delta -0.008697).
+- **etitanic** (classification, degree 2): adaptive.gcv is NEUTRAL for out-of-sample Brier score (ordinary 0.1184 vs adaptive 0.1184, delta -2.082e-16); OOS accuracy ordinary 0.8344 vs adaptive 0.8344.
 
-The adaptive cap is a conservative, default-off forward-pass modification: it charges
-each admitted term only the GCV-justified share of the residual reduction, which limits
-how much any single term dominates the forward search. Whether that conservatism helps or
-hurts generalization is dataset dependent, as the table above shows; on these established
-examples the effect is generally small, and ordinary earth remains the default.
+The adaptive cap is a conservative, default-off modification. Terms are selected by the
+ordinary MARS forward pass, but each term's predictive effect (delta-R^2) is capped at
+`effect.cap` (default 0.9, the maximum fraction of the total sum of squares any
+single term may explain); the saved caps are then applied as a *constrained* final fit,
+so the un-capped terms absorb the residual a dominant term is not allowed to explain.
+Because a strong term is deliberately held below its unconstrained least-squares effect,
+the adaptive model is more heavily regularised in-sample; whether that regularisation
+helps or hurts out-of-sample generalisation is dataset dependent, as the table above
+shows. Ordinary earth remains the default. The `effect.cap` argument tunes the strength:
+`effect.cap >= 1` recovers stock earth, smaller values redistribute more signal.
 
 ## Companion per-dataset files
 

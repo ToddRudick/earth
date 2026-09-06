@@ -9,6 +9,14 @@
 # Each scenario fits ordinary earth (adaptive.gcv=FALSE) and adaptive earth
 # (adaptive.gcv=TRUE), prints a compact comparison, and asserts the intended
 # qualitative outcome with stopifnot() where an exact expectation exists.
+#
+# Mechanism (see man/earth.Rd and src/earth.c): the forward pass admits terms
+# exactly as stock earth, but SAVES a per-term effect cap and applies it as a
+# CONSTRAINED final fit (lm.fit of the pruned basis to the capped forward fit).
+# The cap limits any single term's incremental delta-R^2 to effect.cap (a
+# fraction of the total sum of squares); the un-capped terms then absorb the
+# residual a dominant term is not allowed to explain.  effect.cap>=1 or
+# adaptive.gcv=FALSE reproduces stock earth.
 
 library(earth)
 options(digits = 4)
@@ -210,5 +218,35 @@ stopifnot(is.finite(insample.rsq(m.adp)))
 stopifnot(all(is.finite(m.adp$coefficients)))
 stopifnot(insample.rsq(m.adp) <= insample.rsq(m.ord) + 1e-8)
 cat("adaptive handles interaction basis functions without pathology: PASS\n")
+
+# ----------------------------------------------------------------------------
+# Scenario 7: effect.cap knob.  effect.cap >= 1 reproduces stock earth (the cap
+# can never bind); decreasing effect.cap monotonically holds back more signal
+# from a dominant term.  Invalid effect.cap is rejected.
+# ----------------------------------------------------------------------------
+cat("\n--- Scenario 7: effect.cap strength knob ---\n")
+# effect.cap >= 1: a single term may explain the whole TSS, so the cap never
+# binds and the model is identical to stock earth.
+m.big <- earth(Volume ~ ., data = trees, adaptive.gcv = TRUE, effect.cap = 1)
+stopifnot(isTRUE(all.equal(m.stock$coefficients, m.big$coefficients)))
+stopifnot(isTRUE(all.equal(m.stock$rss, m.big$rss)))
+cat("effect.cap=1 reproduces stock earth: PASS\n")
+
+# smaller effect.cap => more signal held back => lower (or equal) in-sample rsq
+r90 <- earth(Volume ~ ., data = trees, adaptive.gcv = TRUE, effect.cap = 0.9)$rsq
+r50 <- earth(Volume ~ ., data = trees, adaptive.gcv = TRUE, effect.cap = 0.5)$rsq
+r25 <- earth(Volume ~ ., data = trees, adaptive.gcv = TRUE, effect.cap = 0.25)$rsq
+cat("trees rsq at effect.cap 0.9/0.5/0.25:",
+    round(r90, 4), round(r50, 4), round(r25, 4), "\n")
+stopifnot(r90 >= r50 - 1e-8, r50 >= r25 - 1e-8)
+stopifnot(r90 <= m.stock$rsq + 1e-8)
+cat("effect.cap is monotone and never exceeds stock in-sample rsq: PASS\n")
+
+# invalid effect.cap must error
+stopifnot(inherits(try(earth(Volume ~ ., data = trees, adaptive.gcv = TRUE,
+                              effect.cap = -1), silent = TRUE), "try-error"))
+stopifnot(inherits(try(earth(Volume ~ ., data = trees, adaptive.gcv = TRUE,
+                              effect.cap = 0), silent = TRUE), "try-error"))
+cat("invalid effect.cap is rejected: PASS\n")
 
 cat("\n=== all test.adaptive.gcv.R assertions passed ===\n")

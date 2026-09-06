@@ -2748,7 +2748,9 @@ static void ForwardPass(
     const bool AutoLinPreds,     // in: assume predictor linear if knot is min predictor value
     const bool UseBetaCache,     // in: true to use the beta cache, for speed
     const char* sPredNames[],    // in: predictor names, can be NULL
-    const bool AdaptiveGcv)      // in: true to enable the experimental Adaptive GCV Effect Cap
+    const bool AdaptiveGcv,      // in: true to enable the experimental Adaptive GCV Effect Cap
+    const double EffectCap,      // in: cap strength (max delta-R^2 a single term may explain), AdaptiveGcv only
+    double yHatCap[])            // out: nCases x nResp capped forward fit (AdaptiveGcv only, else NULL)
 {
     tprintf(5, "earth.c %s\n", VERSION);
     CheckForwardPassArgs(x, y, yw, WeightsArg, nCases, nResp, nPreds,
@@ -2811,6 +2813,54 @@ static void ForwardPass(
         yMean[iResp]  = Mean(&y_(0,iResp), nCases);
     const double RssNull = GetRssNull(y, WeightsArg, nCases, nResp);
     double Rss = RssNull, RssDelta = RssNull, RSq = 0, RSqDelta = 0;
+
+    // ---------------------------------------------------------------------
+    // Adaptive GCV Effect Cap (FEAT-002), experimental, default OFF.
+    //
+    // WHY THE CAP IS MATERIALISED IN THE FINAL FIT (not via the forward search).
+    // earth's forward pass only SELECTS terms/knots; the returned coefficients
+    // come from an UNCONSTRAINED lm.fit(bx, y) over the pruned term set (see
+    // earth.fit.R).  Moreover FindTerm scores each candidate on the component
+    // of the response ORTHOGONAL to the current basis, so subtracting the
+    // admitted terms' projections from a working response does NOT change any
+    // candidate score (that component is orthogonal to what is removed).  A
+    // forward-pass-only residual/RSS trick therefore cannot change the selected
+    // terms nor the returned fit -- it is a provable no-op.  The cap must
+    // instead be SAVED during the forward pass and APPLIED to the final fit.
+    //
+    // Mechanism (SAVE-THE-CONSTRAINT, per the design decision the spec asks for):
+    //   * Forward SELECTION is left byte-for-byte identical to stock earth:
+    //     FindTerm still scores against the raw response y.
+    //   * For each admitted term we compute the GCV-justified effect budget
+    //     delta-RSS_max (from earth's own GetGcv machinery) and, if the term's
+    //     unconstrained incremental effect RssDelta exceeds it, a per-term cap
+    //     scale s = b_max/bhat in (0,1) (closed form, B^T B = 1 orthonormal
+    //     basis).  Uncapped terms get s = 1.
+    //   * We accumulate the CAPPED forward fit yHatCap in original response
+    //     space:  yHatCap = yMean + sum_k s_(term(k)) * bhat_k * bxOrth[,k],
+    //     where bhat_k = <y_centred, bxOrth[,k]> is the OLS coef on orthonormal
+    //     column k.  yHatCap is exactly stock earth's forward fit for uncapped
+    //     terms and holds back the un-justified effect of capped (dominant)
+    //     terms.
+    //   * yHatCap is returned to earth.fit.R.  When adaptive.gcv=TRUE the final
+    //     coefficients are the CONSTRAINED least-squares fit of the pruned bx to
+    //     yHatCap (i.e. lm.fit(bx, yHatCap)) instead of lm.fit(bx, y).  This
+    //     lets the other (un-capped) terms absorb the residual the dominant term
+    //     is not allowed to explain -- the spec's central intent -- and the
+    //     constraint survives into the returned model, predictions, and summary.
+    //
+    // The cap is only applied on the non-weighted orthonormal-basis path
+    // (yw == NULL) where bhat_k = <y,bxOrth[,k]> holds exactly; the weighted
+    // path uses a different knot search, so capping is disabled there
+    // (documented in man/earth.Rd).  When DoCap is false the block below is a
+    // no-op and yHatCap is never touched.
+    const bool DoCap = AdaptiveGcv && Penalty != -1 && yw == NULL && yHatCap != NULL;
+    if(DoCap) {
+        for(int iResp = 0; iResp < nResp; iResp++)
+            for(int i = 0; i < (const int)nCases; i++)
+                yHatCap[i + iResp*nCases] = yMean[iResp]; // start at the intercept fit
+    }
+    #define yHatCap_(i,iResp) yHatCap[(i) + (iResp)*(nCases)]
     int nUsedTerms = 1;     // number of used basis terms including intercept, for GCV calc
     double Gcv = 0, GcvNull = GetGcv(nUsedTerms, nCases, RssNull, Penalty);
     PrintForwardProlog(nCases, nPreds, nMaxTerms, sPredNames, yw != NULL);
@@ -2862,72 +2912,98 @@ static void ForwardPass(
         // ---------------------------------------------------------------------
         // Adaptive GCV Effect Cap (FEAT-002), experimental, default OFF.
         //
-        // When AdaptiveGcv is false the code below is a no-op and the forward
-        // pass is byte-for-byte identical to stock earth.
+        // When DoCap is false (the default, or the weighted path) the block
+        // below is a no-op: yHatCap is never touched and every quantity that
+        // drives selection / GCV / stopping (Rss, RssDelta, nUsedTerms, Gcv) is
+        // byte-for-byte identical to stock earth.  The cap NEVER alters term
+        // selection; it is SAVED here and APPLIED to the final fit in
+        // earth.fit.R (see the block comment at the top of ForwardPass).
         //
-        // Mechanism: SELECTION-BUDGET (design "A" in the feature spec).
         // The forward pass works in an ORTHONORMAL basis (bxOrth columns have
-        // unit length, so B^T B = 1).  FindTerm returns RssDelta = bhat^2, the
-        // unconstrained incremental RSS reduction of the best candidate, where
-        // bhat = B_perp^T r is the OLS coefficient on the residualized+normalized
-        // candidate direction.  This RssDelta is already the spec's delta-RSS
-        // measured CONDITIONAL on the current model (earth's orthogonal
-        // residualization does this), so no second residualization is added.
+        // unit length, so B^T B = 1).  On the orthonormal column(s) k of the
+        // just-admitted term the OLS coefficient is bhat_k = <y_centred,
+        // bxOrth[,k]> and the term's unconstrained incremental effect is
+        // RssDelta = sum_k bhat_k^2.  We derive a GCV-justified effect budget
+        // DeltaRssMax from earth's own GetGcv machinery: the largest RSS
+        // reduction that does NOT increase GCV once the term's complexity is
+        // charged.  GCV = Rss/(n*(1-C/n)^2), so the break-even RSS at the new
+        // (higher) complexity C1 giving the same GCV as the current model is
+        // RssBreakEven = GcvOld*n*(1-C1/n)^2, hence
+        //   DeltaRssMax = Rss - RssBreakEven   (clamped to [0, RssDelta]).
         //
-        // We derive a GCV-justified budget delta-RSS_max from earth's own GCV
-        // machinery: the largest RSS reduction that does NOT increase GCV when
-        // the term's complexity is charged.  GCV = Rss / (n*(1-C/n)^2), so the
-        // break-even reduction from old complexity C0 to new complexity C1 is
-        //   delta-RSS_max = Rss0 * (1 - ((1-C1/n)/(1-C0/n))^2).
-        // A candidate whose unconstrained delta-RSS exceeds this budget is
-        // "capped": we charge only delta-RSS_max against the running Rss that
-        // drives GCV and the forward-pass stopping rules.  Because the working
-        // Rss then stays higher, the GCV/GRSq trajectory is more conservative
-        // per term but the pass keeps admitting terms longer, so OTHER
-        // predictors' terms get the opportunity to enter the full term set and
-        // survive to the pruning pass and the final (unconstrained) lm.fit.
-        // This is the spec's central intent: a dominant candidate is prevented
-        // from monopolising the complexity budget in a single step.
-        //
-        // NOTE ON ARCHITECTURE: the forward pass only SELECTS terms/knots; the
-        // final coefficients come from an unconstrained lm.fit(bx,y) in
-        // earth.fit.R.  We therefore realize the cap through what gets SELECTED
-        // (the Rss/GCV budget above), which is the only lever that survives to
-        // the final fit.  The capped term itself is still added to bx exactly
-        // as stock earth would add it (same knot, same direction); only the
-        // bookkeeping that governs how many/which further terms are admitted is
-        // adjusted.  The closed-form saturated coefficient
-        //   b_max = bhat - sqrt(bhat^2 - delta-RSS_max)   (B^T B = 1)
-        // is computed below purely as a diagnostic/reference quantity.
-        double RssDeltaCharged = RssDelta; // amount charged against the running Rss
-        if(AdaptiveGcv && Penalty != -1 && iBestCase >= 0 && RssDelta > 0) {
-            const double GcvOld = GetGcv(nOldUsedTerms, nCases, Rss, Penalty);
-            // RSS at which the new (higher) complexity yields the same GCV as
-            // the current model: solve GetGcv(nUsedTerms,n,RssBreakEven,P)==GcvOld.
-            // GetGcv = Rss / (n*(1-Cost)^2), so RssBreakEven = GcvOld*n*(1-Cost1)^2.
+        // If RssDelta <= DeltaRssMax the term is admitted normally (scale s = 1)
+        // and its full projection is accumulated into yHatCap -- identical to
+        // stock earth's forward fit.  If RssDelta > DeltaRssMax the term is
+        // SATURATED: we solve (2s - s^2)*RssDelta = DeltaRssMax for the common
+        // scale s in (0,1), i.e. s = 1 - sqrt(1 - DeltaRssMax/RssDelta), so the
+        // realised effect of the scaled term equals exactly DeltaRssMax.  This
+        // is the spec's closed form b_max = s*bhat = bhat - sqrt(bhat^2 -
+        // DeltaRssMax) applied per orthonormal direction.  We then accumulate
+        // only s*bhat_k*bxOrth[,k] into yHatCap, holding back the un-justified
+        // effect of this (dominant) term.
+        double CapScale = 1; // s: 1 if uncapped, in (0,1) if saturated
+        if(DoCap && iBestCase >= 0 && RssDelta > 0) {
+            // Effect budget expressed as a cap on the term's incremental
+            // delta-R^2 = RssDelta / TSS (the spec's preferred, scale-free
+            // measure).  A single term may realise at most EffectCap of the
+            // TOTAL sum of squares; effect exceeding that is held back so the
+            // other (un-capped) terms can absorb it in the final constrained
+            // fit.  This is adaptive in the natural sense that the cap is a
+            // fraction of the WHOLE signal, so early dominant terms are trimmed
+            // while later terms (whose delta-R^2 is already small) are untouched.
+            //   EffectCap >= 1  -> cap never binds -> stock earth.
+            //   EffectCap  < 1  -> no single term may explain more than that
+            //                      fraction of total variance.
+            // The budget is additionally never allowed below the GCV break-even
+            // reduction (the smallest RSS drop that does not increase GCV), so a
+            // term that is only just worth admitting is never capped below the
+            // level at which it pays for its own complexity.
+            const double TSS = RssNull;
+            double DeltaRssMax = EffectCap * TSS;
             const double nKnots1 = ((double)nUsedTerms - 1) / 2;
             const double Cost1   = (nUsedTerms + Penalty * nKnots1) / nCases;
-            double DeltaRssMax;
-            if(Cost1 >= 1)
-                DeltaRssMax = RssDelta; // complexity saturated: no cap (behave normally)
-            else {
+            if(Cost1 < 1) {
+                const double GcvOld = GetGcv(nOldUsedTerms, nCases, Rss, Penalty);
                 const double RssBreakEven = GcvOld * nCases * sq(1 - Cost1);
-                DeltaRssMax = Rss - RssBreakEven; // budget = current Rss minus break-even Rss
-                if(DeltaRssMax < 0)
-                    DeltaRssMax = 0;
+                const double BreakEven = Rss - RssBreakEven; // min reduction that keeps GCV flat
+                if(DeltaRssMax < BreakEven)
+                    DeltaRssMax = BreakEven;
             }
+            if(DeltaRssMax < 0)
+                DeltaRssMax = 0;
+            if(DeltaRssMax > RssDelta)
+                DeltaRssMax = RssDelta; // never charge more than the OLS effect
+
             if(RssDelta > DeltaRssMax) {
-                // Candidate exceeds its GCV-justified effect: saturate it.
-                const double bhat = sqrt(RssDelta);            // OLS coef, B^T B = 1
-                const double bmax = bhat - sqrt(RssDelta - DeltaRssMax); // diagnostic
+                // solve (2s - s^2)*RssDelta = DeltaRssMax for the scale s in (0,1)
+                CapScale = 1 - sqrt(1 - DeltaRssMax / RssDelta);
+                const double bhat = sqrt(RssDelta);          // OLS coef, B^T B = 1
+                const double bmax = CapScale * bhat;         // capped coef
                 tprintf(6,
                     "effectcap CAP: iTerm %-3d bhat %-12.5g dRSS(ols) %-12.5g "
-                    "dRSSmax %-12.5g bmax %-12.5g\n",
-                    nTerms, bhat, RssDelta, DeltaRssMax, bmax);
-                RssDeltaCharged = DeltaRssMax;
+                    "dRSSmax %-12.5g bmax %-12.5g scale %-12.5g\n",
+                    nTerms, bhat, RssDelta, DeltaRssMax, bmax, CapScale);
+            }
+
+            // Accumulate this term's (possibly scaled) contribution into the
+            // capped forward fit yHatCap.  bxOrth columns are orthonormal, so
+            // the OLS coefficient on column iCol is the dot product with the
+            // response, and the contribution to the fit is that coef times the
+            // column.  Scaling by CapScale realises the effect cap.
+            for(int iCol = nTerms; iCol <= nTerms + 1; iCol++) {
+                if(iCol >= nMaxTerms || !FullSet[iCol])
+                    continue;
+                for(int iResp = 0; iResp < nResp; iResp++) {
+                    double bhat_k = 0;
+                    for(int i = 0; i < (const int)nCases; i++)
+                        bhat_k += y_(i,iResp) * bxOrth_(i,iCol);
+                    const double contrib = CapScale * bhat_k;
+                    for(int i = 0; i < (const int)nCases; i++)
+                        yHatCap_(i,iResp) += contrib * bxOrth_(i,iCol);
+                }
             }
         }
-        Rss -= RssDeltaCharged;
+        Rss -= RssDelta;
         Rss = MaybeZero(Rss); // RSS can go slightly neg due to numerical error
         Gcv = GetGcv(nUsedTerms, nCases, Rss, Penalty);
         const double OldRSq = RSq;
@@ -2944,8 +3020,8 @@ static void ForwardPass(
         // level.
         tprintf(6,
             "effectcap diag: iTerm %-3d RSS %-12.5g RssDelta(ols) %-12.5g "
-            "RssDelta(charged) %-12.5g complexity(nUsedTerms) %-3d GCV %-12.5g\n",
-            nTerms, Rss, RssDelta, RssDeltaCharged, nUsedTerms, Gcv);
+            "capScale %-12.5g complexity(nUsedTerms) %-3d GCV %-12.5g\n",
+            nTerms, Rss, RssDelta, CapScale, nUsedTerms, Gcv);
 
         PrintForwardStep(nTerms, nUsedTerms, iBestCase, iBestPred,
             iBestParent, iBestParent < 0? 0: nDegree[iBestParent]+1,
@@ -2998,6 +3074,7 @@ static void ForwardPass(
 #if FAST_MARS
     FreeQ();
 #endif
+    #undef yHatCap_
     free1(yMean);
     free1(bxOrthMean);
     free1(bxOrthCenteredT);
@@ -3041,7 +3118,9 @@ SEXP ForwardPassR(             // for use by R
     SEXP SEXP_nUseBetaCache,   // in: 1 to use the beta cache, for speed
     SEXP SEXP_Trace,           // in: 0 none 1 overview 2 forward 3 pruning 4 more pruning
     SEXP SEXP_sPredNames,      // in: predictor names in trace printfs
-    SEXP SEXP_AdaptiveGcv)     // in: 1 to enable experimental Adaptive GCV Effect Cap (FEAT-002)
+    SEXP SEXP_AdaptiveGcv,     // in: 1 to enable experimental Adaptive GCV Effect Cap (FEAT-002)
+    SEXP SEXP_EffectCap,       // in: cap strength (max delta-R^2 a single term may explain)
+    SEXP SEXP_yHatCap)         // out: nCases x nResp capped forward fit (AdaptiveGcv only)
 {
     const size_t nCases       = (size_t)(INTEGER(SEXP_nCases)[0]);
     const int nResp           = INTEGER(SEXP_nResp)[0];
@@ -3104,7 +3183,9 @@ SEXP ForwardPassR(             // for use by R
             INTEGER(SEXP_LinPreds), REAL(SEXP_AdjustEndSpan)[0],
             INTEGER(SEXP_nAutoLinPreds)[0], INTEGER(SEXP_nUseBetaCache)[0] != 0,
             sPredNames,
-            INTEGER(SEXP_AdaptiveGcv)[0] != 0);
+            INTEGER(SEXP_AdaptiveGcv)[0] != 0,
+            REAL(SEXP_EffectCap)[0],
+            (INTEGER(SEXP_AdaptiveGcv)[0] != 0)? REAL(SEXP_yHatCap): NULL);
 
     FreeAllowedFunc(); // calls R_ReleaseObject
 
