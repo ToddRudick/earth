@@ -177,6 +177,129 @@ The disable invariant (`effect.cap = 1.0` == stock, `adaptive.gcv = FALSE` ==
 stock) continues to hold identically, as verified in Study 2's pattern and by the
 flow-through check; only the `effect.cap = 0.9` (ON) fits differ from stock.
 
+## Study 4: random 50% term exclusion via `allowed` (B = 40, OFF only)
+
+This study answers a distinct question from the earlier ones. Instead of turning
+the adaptive GCV effect cap on or off, it keeps earth **stock** (`adaptive.gcv =
+FALSE`) and injects randomness into the **forward pass** itself: on every
+candidate-term evaluation, earth calls a user-supplied `allowed` callback, and we
+make that callback drop **~50% of candidate terms at random**. Bagging (`B = 40`)
+then averages many such randomly-thinned earth fits, in the spirit of random
+feature subsampling in a random forest. **No earth source change is needed** -
+`allowed` is a standard earth parameter (a user callback), and `caret::bagEarth`
+forwards `...` straight through to `earth()`.
+
+### The `allowed` callback
+
+earth calls `allowed(degree, pred, parents, namesx, first)` for each candidate
+term during the forward pass and admits the term only if the callback returns
+`TRUE` (contract confirmed from `man/earth.Rd` and
+`inst/slowtests/test.allowedfunc.R`). The callback **must accept all five
+arguments** - earth always passes them, and a function with fewer args errors.
+Our random-50%-exclusion gate is simply:
+
+```r
+allowed.random50 <- function(degree, pred, parents, namesx, first) runif(1) > 0.5
+```
+
+i.e. each candidate term is admitted with probability 0.5 (about half the
+candidates are dropped at random on each call). It is passed straight through
+bagEarth:
+
+```r
+caret::bagEarth(x = train, y = train_y, B = 40, degree = <deg>,
+                adaptive.gcv = FALSE, allowed = allowed.random50)
+```
+
+**Flow-through confirmed.** A tiny smoke fit (`trees`, `Girth`+`Height`,
+`degree = 2`, `B = 8`, `set.seed(2024)`) shows the callback reaching earth: the
+unrestricted bag averaged 4.5 terms/model (per-bag 3 8 5 4 4 4 4 4) while the
+`allowed.random50` bag averaged 3.375 terms/model (per-bag 1 1 4 5 4 4 4 4) - the
+random gate demonstrably yields smaller, different models, so `allowed` does flow
+through bagEarth into each bagged earth fit.
+
+### Method (matches the existing study for comparability)
+
+Same construction as Study 3's `caret.oos()` in
+`inst/slowtests/adaptive.gcv.large.comparison.R`: the four datasets at their
+**full** rows/predictors/degree, a single **70/30 holdout** with
+`set.seed(2024)`, `model.matrix` used to build the numeric design (intercept
+dropped; `spam`'s `type` recoded to 0/1 with nonspam = 0, spam = 1), and holdout
+RMSE computed the same way. The only differences from Study 3 are: **B = 40**
+(double the prior B = 20), **only the OFF case** (`adaptive.gcv = FALSE`, stock
+earth - the adaptive ON variant is deliberately not run here), and the
+`allowed = allowed.random50` restriction. `set.seed(2024)` is set immediately
+before each dataset's `bagEarth` call, so the run is reproducible.
+
+**Reproducibility caveat (important).** The `allowed` gate calls `runif()` on
+every candidate-term evaluation, so it adds a layer of RNG-driven nondeterminism
+**on top of** bagging's bootstrap resampling. The numbers below are reproducible
+**only** with the same R RNG stream: the fixed `set.seed(2024)` before each
+`bagEarth` call, this earth/caret build (earth 5.3.6, caret 7.0.1, R 4.5.3), and
+the same platform RNG. Change the seed, the RNG, the package versions, or `B` and
+the exact RMSE will move. The results characterise the *behaviour* of
+random-50%-term-exclusion bagging on these datasets; they are not a fixed
+constant of the data. If a bag were ever thinned so aggressively that it
+collapsed to a near-empty (intercept-only) model, we note it below rather than
+hide it.
+
+Full-size configuration actually run (all four completed at **B = 40**; no B
+reduction and no timeout was needed):
+
+| dataset | nrow | ncol | degree | B | holdout | seed | runtime (OFF) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| boston | 506 | 13 | 2 | 40 | 70/30 | 2024 | ~0.5 s |
+| spam | 4601 | 57 | 1 | 40 | 70/30 | 2024 | ~3.7 s |
+| solubility | 951 | 228 | 2 | 40 | 70/30 | 2024 | ~22 s |
+| synthetic_large | 4000 | 40 | 2 | 40 | 70/30 | 2024 | ~12 s |
+
+### Results: holdout RMSE OFF with random-50% `allowed` restriction
+
+| dataset | nrow | ncol | degree | B | RMSE OFF (random-50% allowed) | doc Study-3 RMSE OFF (no restriction) |
+| --- | --- | --- | --- | --- | --- | --- |
+| boston | 506 | 13 | 2 | 40 | 3.08016 | 3.38073 |
+| spam | 4601 | 57 | 1 | 40 | 0.27055 | 0.27107 |
+| solubility | 951 | 228 | 2 | 40 | 0.59757 | 0.61196 |
+| synthetic_large | 4000 | 40 | 2 | 40 | 1.65540 | 1.50073 |
+
+`spam` RMSE is on the 0/1 `type` response. Binary detail for `spam` (holdout,
+`B = 40`, degree 1, bagged class-1 probability thresholded at 0.5):
+
+| setting | RMSE | accuracy | Brier |
+| --- | --- | --- | --- |
+| stock OFF + random-50% allowed | 0.27055 | 0.92826 | 0.07320 |
+
+### Degenerate-bag check
+
+No bag collapsed to a near-empty model. Minimum terms per bag across the 40
+models was: boston 16, spam 13, solubility 25, synthetic_large 12 (means ~19.7,
+16.5, 35.9, 19.1 respectively). So even with ~50% of candidates randomly dropped
+per call, every bag still admitted a substantial multi-term model; there were
+**zero** intercept-only or single-term degenerate bags on any of the four
+datasets in this seeded run.
+
+### Observations (comparison to Study 3 OFF is context, not the deliverable)
+
+The deliverable is the new random-allowed OFF column above. As context, comparing
+it to Study 3's full-size "RMSE OFF" (plain stock bagged earth, `B = 20`, no
+`allowed` restriction):
+
+- **boston** improves (3.38073 -> 3.08016) and **solubility** improves
+  (0.61196 -> 0.59757): on these, randomly thinning candidate terms and
+  averaging more bags acts like extra regularisation / decorrelation and helps
+  the holdout.
+- **spam** is essentially unchanged (0.27107 -> 0.27055; accuracy 0.92826), i.e.
+  neutral.
+- **synthetic_large** is worse (1.50073 -> 1.65540): this design has a strong,
+  genuinely-structured signal (a linear dominant, two hinges and an
+  interaction), and randomly discarding half the candidate terms per call keeps
+  individual bags from reliably capturing that structure, which the averaging
+  does not fully recover.
+
+These are single-seed holdout numbers with the extra `allowed` RNG layer
+described in the caveat above, and the comparison mixes B = 40 (this study) with
+the B = 20 Study-3 baseline; read the direction, not the third decimal.
+
 ## Overall verdict
 
 - The adaptive GCV effect cap flows correctly through `caret::bagEarth` and can
