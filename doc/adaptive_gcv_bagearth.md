@@ -300,6 +300,137 @@ These are single-seed holdout numbers with the extra `allowed` RNG layer
 described in the caveat above, and the comparison mixes B = 40 (this study) with
 the B = 20 Study-3 baseline; read the direction, not the third decimal.
 
+## Study 5: controlled random-50% `allowed` vs baseline (both B = 40, multi-seed)
+
+**Why this study exists (what was wrong with Study 4).** Study 4's headline
+comparison is **uncontrolled**: it put the random-50%-`allowed` arm at **B = 40**
+against the plain-OFF baseline that had been measured back in Study 3 at
+**B = 20**, on a **single seed** (2024). Two things therefore moved at once - the
+`allowed` gate *and* the amount of bagging (20 -> 40 bags) - so any RMSE
+difference cannot be attributed to the `allowed` restriction alone; part of it is
+just the extra bagging. And with a single seed the RNG noise of the random gate
+(and of the bootstrap and, here, the holdout split) is completely unquantified.
+Study 4 is **left intact above**; Study 5 **corrects it** with an apples-to-apples,
+multi-seed design.
+
+**The controlled design.** For each dataset, at its **full** rows / predictors /
+degree, run **two arms that differ in exactly one argument**:
+
+- **(A) BASELINE:** `caret::bagEarth(x = train, y = train_y, B = 40,
+  degree = <deg>, adaptive.gcv = FALSE)` - no `allowed` restriction.
+- **(B) RANDOM-50%:** `caret::bagEarth(x = train, y = train_y, B = 40,
+  degree = <deg>, adaptive.gcv = FALSE, allowed = allowed.random50)` where
+  `allowed.random50 <- function(degree, pred, parents, namesx, first) runif(1) > 0.5`.
+
+**Both arms are B = 40** and both are stock earth (`adaptive.gcv = FALSE`); the
+`allowed` argument is the *only* difference. This removes the B = 20 -> 40
+confound that Study 4 had.
+
+**Construction (matches Study 3's `caret.oos()` for comparability).** Datasets are
+loaded exactly as in `inst/slowtests/adaptive.gcv.large.comparison.R`
+(`MASS::Boston`; `kernlab` `spam` with `type` recoded to 0/1, nonspam = 0,
+spam = 1; `AppliedPredictiveModeling` solubility as `solTrainX`/`solTrainY`; and
+the synthetic generator `make.synthetic()` **reused verbatim** from that script,
+seed 2024). The numeric design is built with `model.matrix` (intercept dropped),
+a **70/30 holdout** is taken, and holdout RMSE is computed the same way as
+`caret.oos()`.
+
+**Seeds and split policy.** Both arms are run across **5 seeds: 2024, 2025, 2026,
+2027, 2028**. The **70/30 split is RE-DRAWN per seed** (preferred, per the design:
+it gives a fuller variance estimate than holding the split fixed) - `set.seed(s)`
+is called immediately before the split *and* again immediately before each
+`bagEarth` call, so for a given seed the holdout split, the bootstrap resampling,
+and the `allowed` gate's `runif()` stream are all reproducible. For each dataset
+and arm we report the **mean and sd of holdout RMSE across the 5 seeds** (and for
+`spam`, mean +/- sd accuracy and Brier).
+
+As a reproducibility sanity check, seed 2024's RANDOM-50% RMSE reproduces Study
+4's single-seed numbers exactly (e.g. boston 3.08016, spam 0.27055, solubility
+0.59757, synthetic_large 1.65540), confirming the same RNG stream; Study 5 simply
+adds the matched B = 40 baseline and four more seeds.
+
+Configuration actually run (all four datasets completed at **B = 40, all 5
+seeds**; no seed reduction was needed):
+
+| dataset | nrow | ncol | degree | B | holdout | seeds | split | wall-clock (both arms, 5 seeds) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| boston | 506 | 13 | 2 | 40 | 70/30 | 2024-2028 | re-drawn per seed | ~9 s |
+| spam | 4601 | 57 | 1 | 40 | 70/30 | 2024-2028 | re-drawn per seed | ~50 s |
+| solubility | 951 | 228 | 2 | 40 | 70/30 | 2024-2028 | re-drawn per seed | ~349 s |
+| synthetic_large | 4000 | 40 | 2 | 40 | 70/30 | 2024-2028 | re-drawn per seed | ~169 s |
+
+### Results: baseline vs random-50%, both B = 40, mean +/- sd over 5 seeds
+
+The verdict compares the mean RMSE **delta (B - A)** to the **baseline sd**: if
+`|delta|` is within +/- 1 sd it is **neutral** (indistinguishable from seed/RNG
+noise once B is held equal); larger than that in the harmful direction is
+**hurts**, in the helpful direction is **helps**.
+
+| dataset | nrow | ncol | degree | B | baseline RMSE (mean +/- sd) | random-50% RMSE (mean +/- sd) | delta (B - A) | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| boston | 506 | 13 | 2 | 40 | 3.15607 +/- 0.11897 | 3.12951 +/- 0.13941 | -0.02656 | **neutral** (|delta| = 0.22 sd) |
+| spam | 4601 | 57 | 1 | 40 | 0.27330 +/- 0.00214 | 0.27203 +/- 0.00135 | -0.00127 | **neutral** (|delta| = 0.59 sd) |
+| solubility | 951 | 228 | 2 | 40 | 0.61230 +/- 0.00755 | 0.60818 +/- 0.00832 | -0.00412 | **neutral** (|delta| = 0.55 sd) |
+| synthetic_large | 4000 | 40 | 2 | 40 | 1.39341 +/- 0.19184 | 1.75346 +/- 0.26633 | +0.36004 | **hurts** (|delta| = 1.88 sd) |
+
+`spam` RMSE is on the 0/1 `type` response. Binary detail for `spam` (holdout,
+`B = 40`, degree 1, bagged class-1 probability thresholded at 0.5), mean +/- sd
+over the 5 seeds:
+
+| arm | RMSE (mean +/- sd) | accuracy (mean +/- sd) | Brier (mean +/- sd) |
+| --- | --- | --- | --- |
+| (A) baseline | 0.27330 +/- 0.00214 | 0.92696 +/- 0.00226 | 0.07470 +/- 0.00117 |
+| (B) random-50% | 0.27203 +/- 0.00135 | 0.92507 +/- 0.00233 | 0.07400 +/- 0.00073 |
+
+For `spam` the accuracy difference (0.92696 -> 0.92507, about two fewer correct on
+a 1380-row holdout) and the Brier difference are both **well within one sd**, and
+they point in opposite directions to the tiny RMSE difference, i.e. classification
+quality is **indistinguishable** between the two arms.
+
+### Degenerate-bag check
+
+No bag collapsed to a near-empty model in either arm on any dataset. The minimum
+terms-per-bag observed across all 5 seeds was: boston 15 (baseline) / 15
+(random-50%), spam 12 / 11, solubility 22 / 23, synthetic_large 9 / 10. So even
+with ~50% of candidates randomly dropped per call, every bag admitted a
+substantial multi-term model.
+
+### Per-dataset verdict once B is controlled
+
+- **boston - neutral.** Baseline 3.156 vs random-50% 3.130; the -0.027 delta is
+  only 0.22 baseline sd. Study 4's apparent "boston improves 3.381 -> 3.080" was
+  an artefact of comparing B = 40 against the B = 20 Study-3 baseline: with B held
+  at 40 the plain baseline is already ~3.156, so essentially all of that apparent
+  gain was the extra bagging, not the `allowed` gate.
+- **spam - neutral.** RMSE -0.0013 (0.59 sd), accuracy and Brier both within noise.
+  Consistent with Study 4's "essentially unchanged".
+- **solubility - neutral.** Baseline 0.6123 vs random-50% 0.6082; -0.0041 delta is
+  0.55 baseline sd. Study 4's apparent "solubility improves 0.612 -> 0.598" was
+  again mostly the B = 20 -> 40 change: at matched B = 40 the baseline is ~0.612
+  and the gap to random-50% shrinks into the noise band.
+- **synthetic_large - hurts.** Baseline 1.393 vs random-50% 1.753; +0.360 delta is
+  1.88 baseline sd - the only dataset where the effect clears the noise. This
+  design has a strong, genuinely-structured signal (a linear dominant, two hinges
+  and an interaction), and randomly discarding half the candidate terms per call
+  keeps individual bags from reliably capturing that structure; averaging 40 such
+  thinned bags does not recover it. This agrees in direction with Study 4 and
+  strengthens it: the harm is real, not seed noise.
+
+### Overall conclusion (Study 5)
+
+Once **B is held equal at 40** and **seed/RNG variability is quantified over 5
+seeds**, the random-50% `allowed` gate is **neutral on 3 of the 4 datasets**
+(boston, spam, solubility - every RMSE delta is within one baseline sd, and
+spam's accuracy/Brier are within noise) and **harmful on the one dataset with a
+strong structured signal** (synthetic_large, ~1.9 sd worse). Crucially, the two
+"improvements" Study 4 reported (boston, solubility) **do not survive the
+controlled comparison**: they were driven by the uncontrolled B = 20 -> 40 change,
+not by the `allowed` restriction. So the honest answer to the actual question is
+that **randomly dropping 50% of candidate terms has no beneficial OOS effect once
+bagging is held constant** - it is at best neutral and, where the signal is strong
+and structured, it hurts. The earlier apparent benefit was the extra bagging plus
+single-seed noise, not the random-`allowed` gate.
+
 ## Overall verdict
 
 - The adaptive GCV effect cap flows correctly through `caret::bagEarth` and can
