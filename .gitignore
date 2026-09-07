@@ -1,0 +1,7 @@
+# R package library cache used by the fast-setup recipe (doc/adaptive_gcv_setup.md).
+# Never commit an installed R library into the repo. The recommended cache lives
+# OUTSIDE this repo at /projects/sandbox/.Rcache (the workspace root is not a git
+# repo), but ignore these names here too in case a cache is created inside the tree.
+.Rcache/
+.Rcache_bench/
+.Rsrc_bench/

@@ -86,6 +86,28 @@ earth.fit <- function(
     fast.k         = 20,    # Fast MARS K: 0 means use all terms i.e. no Fast MARS
     fast.beta      = 1,     # Fast MARS ageing coefficient
 
+    adaptive.gcv   = FALSE, # EXPERIMENTAL (FEAT-002): TRUE enables the Adaptive GCV
+                            # Effect Cap.  Each forward-pass term is admitted normally
+                            # but its predictive effect (delta-RSS) is capped to the
+                            # amount justified by the current GCV/complexity tradeoff;
+                            # the cap is saved and applied as a constrained final fit,
+                            # so the un-capped terms absorb the residual a dominant term
+                            # is not allowed to explain.  Default FALSE reproduces stock
+                            # earth exactly (byte-for-byte).  See man/earth.Rd.
+    effect.cap     = 0.9,   # EXPERIMENTAL (FEAT-002, FEAT-004): slack-strength knob,
+                            # used only when adaptive.gcv=TRUE.  The cap is adaptive and
+                            # per-term-complexity-aware: each term's allowed incremental
+                            # effect is interpolated between its GCV break-even reduction
+                            # (floor) and its unconstrained OLS effect (ceiling), with the
+                            # slack shrinking as model complexity grows.  Complexity is
+                            # charged per term: a hinge term-pair adds 2 terms and 1 knot,
+                            # a linear/linpreds term adds 1 term and 0 knots.  Most of the
+                            # hinge-vs-linear gap comes from the per-term term count; the
+                            # explicit knot charge sharpens it, so a hinge is shrunk somewhat
+                            # more than a linear term of equal effect.  effect.cap >= 1 => cap
+                            # never binds (byte-for-byte stock earth); smaller => stronger
+                            # shrinkage / more redistribution of signal.  Must be positive.
+
                             # Following affect pruning only, not forward pass
                             # If you change these, update prune.only.args too!
 
@@ -144,6 +166,10 @@ earth.fit <- function(
     check.numeric.scalar(newvar.penalty)
     check.numeric.scalar(fast.k)
     check.numeric.scalar(fast.beta)
+    adaptive.gcv <- check.boolean(adaptive.gcv)
+    check.numeric.scalar(effect.cap)
+    if(effect.cap <= 0)
+        stop0("effect.cap must be positive")
     check.integer.scalar(nprune, null.ok=TRUE)
     check.numeric.scalar(Adjust.endspan)
     check.boolean(Auto.linpreds)
@@ -227,11 +253,12 @@ earth.fit <- function(
                     minspan, endspan, newvar.penalty, fast.k, fast.beta,
                     linpreds, allowed,
                     Scale.y, Adjust.endspan, Auto.linpreds, Use.beta.cache,
-                    n.allowed.args, env, maxmem)
+                    n.allowed.args, env, maxmem, adaptive.gcv, effect.cap)
         termcond <- rv$termcond
         bx       <- rv$bx
         dirs     <- rv$dirs
         cuts     <- rv$cuts
+        yhat.cap <- rv$yhat.cap # capped forward fit (adaptive.gcv only, else NULL)
     } else {
         # no forward pass: get here if update.earth() called me with no forward pass params
         trace1(trace, "Skipped forward pass\n")
@@ -240,6 +267,7 @@ earth.fit <- function(
         cuts     <- Object$cuts
         termcond <- Object$termcond
         bx       <- get.bx(x, seq_len(nrow(dirs)), dirs, cuts) * sqrt(weights) # weight bx
+        yhat.cap <- NULL # no forward pass, so no capped fit (update.earth path)
     }
     possible.gc(maxmem, trace, "after forward.pass")
     penalty1 <- penalty
@@ -270,16 +298,37 @@ earth.fit <- function(
     nselected <- length(selected.terms)
 
     # regress y on bx to get coefficients, fitted.values etc.
+    #
+    # EXPERIMENTAL Adaptive GCV Effect Cap (FEAT-002): when adaptive.gcv=TRUE and
+    # the forward pass produced a capped fit (yhat.cap, the unweighted non-glm
+    # orthonormal-basis path), the FINAL coefficients are the constrained least-
+    # squares fit of the pruned bx to yhat.cap instead of to the raw response y.
+    # yhat.cap holds back the un-justified predictive effect of dominant terms
+    # (see the design note at the top of ForwardPass in src/earth.c), so this
+    # constrained fit lets the other (un-capped) terms absorb the residual the
+    # dominant term is not allowed to explain -- the spec's central intent.  The
+    # residuals/rss reported below are then measured against yhat.cap, i.e. they
+    # describe the capped model that is actually returned.  When adaptive.gcv is
+    # FALSE (the default) yhat.cap is NULL and this is exactly stock earth.
+    y.fit <- y
+    if(!is.null(yhat.cap) && !use.weights)
+        y.fit <- yhat.cap
     if(use.weights)
-        lm.fit <- lm.wfit(bx, y, w=weights, singular.ok=FALSE)
+        lm.fit <- lm.wfit(bx, y.fit, w=weights, singular.ok=FALSE)
     else
-        lm.fit <- lm.fit(bx, y, singular.ok=FALSE)
+        lm.fit <- lm.fit(bx, y.fit, singular.ok=FALSE)
 
     # the as.matrix calls are needed if y is a vector
     # so the fitted.values etc. are always matrices (not vectors)
     fitted.values <- as.matrix(lm.fit$fitted.values)
     residuals     <- as.matrix(lm.fit$residuals)
     coefficients  <- as.matrix(lm.fit$coefficients)
+    # FEAT-002: report residuals/rss against the TRUE response y, not the capped
+    # target yhat.cap, so rsq/grsq honestly describe how the returned (capped)
+    # model fits the real data.  fitted.values and coefficients are the capped
+    # model.  (No-op when adaptive.gcv is off, since then y.fit is y.)
+    if(!is.null(yhat.cap) && !use.weights)
+        residuals <- as.matrix(y - fitted.values)
     resp.names <- colnames(y)
     colnames(fitted.values) <- resp.names
     colnames(residuals)     <- resp.names
@@ -355,6 +404,19 @@ earth.fit <- function(
     rsq  <- get.rsq(rss, rss.per.subset[1])
     gcv  <- gcv.per.subset[nselected]
     grsq <- get.rsq(gcv, gcv.per.subset[1])
+    # FEAT-002: rss.per.subset/gcv.per.subset come from the pruning pass, which
+    # is an UNCONSTRAINED fit and so does not describe the capped model that is
+    # actually returned.  When adaptive.gcv is on, recompute the scalar rss/rsq/
+    # gcv/grsq from the capped residuals so the summary honestly reflects the
+    # returned model.  (No-op when adaptive.gcv is off: yhat.cap is NULL.)
+    if(!is.null(yhat.cap) && !use.weights) {
+        rss  <- sos(residuals)
+        rss0 <- sum((y - mean(y))^2)
+        rsq  <- get.rsq(rss, rss0)
+        gcv  <- get.gcv(rss, nselected, penalty, nrow(bx))
+        gcv0 <- get.gcv(rss0, 1, penalty, nrow(bx))
+        grsq <- get.rsq(gcv, gcv0)
+    }
     rv <- structure(list(   # term 1 is the intercept in all returned data
         rss            = rss,   # RSS, across all responses if y has multiple cols
         rsq            = rsq,   # R-Squared, across all responses
@@ -394,6 +456,13 @@ earth.fit <- function(
     if(!is.null(offset))
         rv$offset <- offset
 
+    # FEAT-002: record the experimental flag on the object only when enabled,
+    # so that default (adaptive.gcv=FALSE) models are unchanged (no extra field).
+    if(adaptive.gcv) {
+        rv$adaptive.gcv <- TRUE
+        rv$effect.cap   <- effect.cap
+    }
+
     if(!is.null(glm.list)) {
         rv$glm.list         <- glm.list   # list of glm models, NULL if none
         rv$glm.coefficients <- glm.coefs  # matrix of glm coefs, nselected x nresp
@@ -415,7 +484,8 @@ forward.pass <- function(x, y, yw, weights, # must be double, but yw can be NULL
                          minspan, endspan, newvar.penalty, fast.k, fast.beta,
                          linpreds, allowed,
                          Scale.y, Adjust.endspan, Auto.linpreds, Use.beta.cache,
-                         n.allowed.args, env, maxmem)
+                         n.allowed.args, env, maxmem, adaptive.gcv=FALSE,
+                         effect.cap=0.9)
 {
     if(nrow(x) < 2)
         stop0("the x matrix must have at least two rows")
@@ -443,6 +513,9 @@ forward.pass <- function(x, y, yw, weights, # must be double, but yw can be NULL
     dirs     <- matrix(0, nrow=nk, ncol=npreds)
     cuts     <- matrix(0, nrow=nk, ncol=npreds)
     termcond <- integer(length=1) # reason we terminated the forward pass
+    # FEAT-002: out buffer for the capped forward fit (adaptive.gcv only).  C
+    # fills this with the (possibly y-scaled) capped fit; we unscale it below.
+    yhat.cap <- matrix(0, nrow=nrow(x), ncol=ncol(y))
 
     stopifnot(!is.null(colnames(x))) # ensure we have predictor names
     stopifnot(is.double(x)) # no typecast in .Call below
@@ -482,14 +555,33 @@ forward.pass <- function(x, y, yw, weights, # must be double, but yw can be NULL
         as.integer(Use.beta.cache),        # in: int* nUseBetaCache
         as.double(max(trace, 0)),          # in: double* Trace
         colnames(x),                       # in: char* sPredNames[]
+        as.integer(adaptive.gcv),          # in: int* AdaptiveGcv (FEAT-002)
+        as.double(effect.cap),             # in: double* EffectCap (FEAT-002)
+        yhat.cap,                          # out: double yHatCap[] (FEAT-002)
         NAOK = TRUE, # we check for NAs etc. internally in C ForwardPass
         PACKAGE="earth")
 
     fullset  <- as.logical(fullset)
+    # FEAT-002: unscale the capped forward fit back to the original response
+    # space so it aligns with the unscaled y used in the final lm.fit.  If
+    # Scale.y centred/scaled y, undo that here.  Returned only when adaptive.gcv.
+    yhat.cap.out <- NULL
+    if(adaptive.gcv) {
+        yhat.cap.out <- yhat.cap
+        if(Scale.y) {
+            sc <- attr(y, "scaled:scale")
+            ce <- attr(y, "scaled:center")
+            if(!is.null(sc))
+                yhat.cap.out <- sweep(yhat.cap.out, 2, sc, `*`)
+            if(!is.null(ce))
+                yhat.cap.out <- sweep(yhat.cap.out, 2, ce, `+`)
+        }
+    }
     list(termcond = termcond,
          bx       = bx[, fullset, drop=FALSE],
          dirs     = dirs[fullset, , drop=FALSE],
-         cuts     = cuts[fullset, , drop=FALSE])
+         cuts     = cuts[fullset, , drop=FALSE],
+         yhat.cap = yhat.cap.out)
 }
 # Used when building the model to name the columns of bx and rows of dirs etc.
 # Also called by mars.to.earth.

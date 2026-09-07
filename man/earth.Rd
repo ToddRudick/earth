@@ -45,6 +45,7 @@ See the package vignette
     nk = min(200, max(20, 2 * ncol(x))) + 1,
     thresh = 0.001, minspan = 0, endspan = 0,
     newvar.penalty = 0, fast.k = 20, fast.beta = 1,
+    adaptive.gcv = FALSE, effect.cap = 0.9,
     linpreds = FALSE, allowed = NULL,
     nprune = NULL, Object = NULL,
     Scale.y = NULL, Adjust.endspan = 2, Auto.linpreds = TRUE,
@@ -253,6 +254,92 @@ edges of the data).  See also the \code{Adjust.endspan} argument.
      Fast MARS paper section 3.1.
      Default is \code{1}.
      A value of \code{0} sometimes gives better results.
+}
+\item{adaptive.gcv}{
+     (\bold{Experimental}.)
+     Default is \code{FALSE}.
+\cr
+     When \code{TRUE}, enable the \emph{Adaptive GCV Effect Cap}.
+     Terms are selected by the ordinary MARS forward pass, but each term's
+     incremental predictive effect (its reduction in RSS, equivalently its
+     \eqn{\Delta R^2}) is capped at the amount justified by the current
+     GCV/complexity tradeoff.  A term whose unconstrained least-squares
+     effect exceeds the cap is admitted but \emph{saturated}: the amount by
+     which it exceeds the cap is held back.  The per-term caps are saved
+     during the forward pass and applied as a \emph{constrained} final fit
+     (the pruned basis is regressed on the capped forward fit rather than on
+     the raw response), so the un-capped terms absorb the residual that a
+     dominant term is not allowed to explain.  This is intended to stop one
+     dominant term from consuming a disproportionate share of the signal and
+     to give other terms an opportunity to contribute.
+\cr
+     The cap is on predictive \emph{effect} (\eqn{\Delta R^2}), not the raw
+     coefficient, and is measured conditional on the current model, so the
+     behaviour is invariant to rescaling a predictor.  The cap strength is
+     controlled by \code{effect.cap}.
+\cr
+     The cap is applied only on the ordinary (unweighted, non-\code{glm})
+     fitting path; with case weights the model is fit as if
+     \code{adaptive.gcv=FALSE}.
+\cr
+     When \code{adaptive.gcv=TRUE} the forward pass \emph{also} automatically
+     competes, for each candidate predictor, a hinge form against a linear
+     (unhinged) form and admits whichever form has the higher \emph{justified}
+     (capped) effect under the per-term-complexity budget.  Because the
+     per-term knot charge makes a hinge (which adds one knot) cost more than
+     the linear form (which adds none), a genuinely-linear dominant predictor
+     is admitted \emph{automatically} as a linear term, without the user
+     having to set \code{linpreds}; genuinely-nonlinear signal still enters as
+     a hinge (the hinge wins the justified competition).  This automatic
+     linear selection is gated: it occurs only when \code{effect.cap < 1} and
+     \code{Auto.linpreds=TRUE} (the default).  Setting \code{Auto.linpreds=FALSE}
+     \emph{suppresses} the automatic linear selection (the fit falls back to
+     the hinge form), consistent with \code{earth}'s contract of not inferring
+     linearity when \code{Auto.linpreds} is off.
+\cr
+     For interactions (\code{degree > 1}) this is a first-cut rule: no new
+     interaction-linear candidates are invented, the competition applies only
+     to the \code{degree}-1 new-form linear-vs-hinge pair, and a child
+     interaction hinge is charged one knot.
+\cr
+     The competition is per-predictor while selection across predictors still
+     uses the raw (uncapped) effect.  A consequence is that when the linear
+     form wins a predictor's justified competition but its raw effect is not
+     the best across all predictors, a hinge that standard \code{earth} would
+     have admitted for that predictor can be suppressed.  This is the intended
+     behaviour of competing forms per predictor and then selecting across
+     predictors on raw effect.
+\cr
+     This is an experimental statistical feature.
+     With the default \code{adaptive.gcv=FALSE} the results are byte-for-byte
+     identical to standard \code{earth}.  See \code{trace>=6} for per-step
+     cap diagnostics.
+}
+\item{effect.cap}{
+     (\bold{Experimental}.)
+     Default is \code{0.9}.  Used only when \code{adaptive.gcv=TRUE}.
+\cr
+     A \emph{slack-strength} knob controlling how far below its
+     unconstrained least-squares effect each forward-pass term is pushed
+     toward the effect that merely pays for its own complexity.  The cap is
+     \emph{adaptive} and \emph{per-term-complexity-aware}: for each admitted
+     term the allowed incremental effect is interpolated between the GCV
+     break-even reduction (the floor: the smallest RSS drop that does not
+     increase GCV, so a barely-justified term is never over-capped) and the
+     full unconstrained effect (the ceiling).  The interpolation slack shrinks
+     as the model consumes complexity, so regularization strengthens as the
+     model grows.  The complexity charge is computed \emph{per term}: a hinge
+     term-pair adds two terms while a linear (or \code{linpreds}) term adds
+     one, and the knot count is charged explicitly (a linear or \code{linpreds}
+     term adds no knot, a hinge term adds one knot).  At the same unconstrained
+     effect a hinge term (more complex) is therefore shrunk more than a linear
+     term.  Most of that difference comes from the per-term term count; the
+     explicit knot charge refines and widens it rather than being its sole
+     cause.
+\cr
+     \code{effect.cap >= 1} means the cap can never bind, reproducing standard
+     \code{earth} byte-for-byte; smaller values apply stronger shrinkage and
+     redistribute more signal away from dominant terms.  Must be positive.
 }
 \item{linpreds}{
      Index vector specifying which predictors should enter linearly, as in \code{\link{lm}}.

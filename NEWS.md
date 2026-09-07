@@ -2,6 +2,49 @@
 
 ## 5.3.6 Aug 10, 2026
 
+  Added the experimental `adaptive.gcv` argument to `earth` (default `FALSE`),
+  with a companion `effect.cap` argument (default `0.9`).  When
+  `adaptive.gcv=TRUE`, this enables the Adaptive GCV Effect Cap: terms are
+  selected by the ordinary forward pass, but each term's incremental
+  predictive effect (delta-R^2) is capped at the amount justified by the
+  current GCV/complexity tradeoff.  The per-term caps are saved during the
+  forward pass and applied as a constrained final fit, so the un-capped terms
+  absorb the residual a dominant term is not allowed to explain.  The cap is
+  now GCV/complexity-adaptive: for each admitted term the allowed incremental
+  effect is interpolated between the GCV break-even reduction (floor) and the
+  unconstrained least-squares effect (ceiling), with the interpolation slack
+  shrinking as the model consumes complexity, so regularization strengthens as
+  the model grows.  The complexity charge is computed per term rather than
+  from the model-wide averaged approximation: a hinge term-pair adds two terms
+  while a linear or `linpreds` term adds one, and the knot count is charged
+  explicitly (a linear or `linpreds` term adds no knot, a hinge term adds one
+  knot).  The bulk of the hinge-vs-linear difference comes from the per-term
+  term count (which the old averaged approximation already carried); the
+  explicit knot charge sharpens that difference so that, at equal effect, a
+  hinge term is shrunk somewhat more than the cheaper linear form.
+  `effect.cap` is now a slack-strength knob controlling how far below its OLS
+  effect a term is pushed toward its break-even (`effect.cap >= 1` reproduces
+  stock `earth`).
+  The cap is on the predictive effect (not the raw coefficient) and is measured
+  conditional on the current model, so it is scale-invariant.  With the default
+  `adaptive.gcv=FALSE` the results are byte-for-byte identical to previous
+  versions of `earth`.
+
+  When `adaptive.gcv=TRUE`, the forward pass now also automatically competes a
+  hinge form against a linear (unhinged) form of each candidate predictor and
+  admits the form with the higher justified (capped) effect under the
+  per-term-complexity budget.  Because the per-term knot charge makes a hinge
+  cost more than the cheaper 0-knot linear form, a genuinely-linear dominant
+  predictor is admitted as a linear term automatically, so the user no longer
+  needs to set `linpreds` to obtain the linear form; genuinely-nonlinear signal
+  still enters as a hinge.  This automatic linear selection is experimental and
+  gated: it occurs only when `effect.cap < 1` and `Auto.linpreds=TRUE` (the
+  default); `Auto.linpreds=FALSE` suppresses it (the fit falls back to the
+  hinge form).  For interactions (`degree > 1`) it is a first-cut rule that
+  competes only the degree-1 new-form linear-vs-hinge pair (a child interaction
+  hinge is charged one knot).  As before, with the default `adaptive.gcv=FALSE`
+  the results are byte-for-byte identical to stock `earth`.
+
   Updated some web addresses in the man pages.
 
 ## 5.3.5 Dec 30, 2025

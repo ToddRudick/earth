@@ -1050,6 +1050,58 @@ static INLINE double GetGcv(const int nTerms, // nbr basis terms including inter
 }
 
 //-----------------------------------------------------------------------------
+// JustifiedEffect (FEAT-002): the GCV-justified (capped) incremental effect a
+// candidate term is allowed to realize under the adaptive per-term-complexity
+// budget.  This is the SINGLE source of truth for the Stage-1 budget math: it
+// is called both by the ForwardPass cap block (to materialise yHatCap) and by
+// the Stage-2 hinge-vs-linear form competition in FindPredGivenParent, so the
+// two sites cannot diverge.
+//
+// Given the candidate's unconstrained incremental effect RssDelta and its
+// marginal complexity (deltaTerms, deltaKnots), return the capped effect
+// DeltaRssMax in [0, RssDelta].  EffectCap >= 1 fast-paths DeltaRssMax=RssDelta
+// (exact stock reproduction).  See the long block comment in ForwardPass for
+// the derivation of Cost1 / BreakEven / slackFactor / DeltaRssMax.
+static double JustifiedEffect(
+    const double RssDelta,      // in: unconstrained incremental effect of the candidate
+    const int deltaTerms,       // in: marginal terms added (1 linear, 2 hinge pair)
+    const int deltaKnots,       // in: marginal knots added (0 linear, 1 hinge)
+    const int nOldUsedTerms,    // in: used terms before this candidate
+    const int nKnotsOld,        // in: explicit knot count before this candidate
+    const double Rss,           // in: current model RSS (before this candidate)
+    const double Penalty,       // in: GCV penalty per knot
+    const double EffectCap,     // in: cap strength
+    const size_t nCases)        // in
+{
+    if(RssDelta <= 0)
+        return 0;
+    if(EffectCap >= 1)
+        return RssDelta;        // fast-path: cap never binds -> stock earth
+    const double Cost1 = (nOldUsedTerms + deltaTerms
+                            + Penalty * (nKnotsOld + deltaKnots)) / nCases;
+    const double GcvOld = GetGcv(nOldUsedTerms, nCases, Rss, Penalty);
+    const double RssBreakEven = (Cost1 < 1) ? GcvOld * nCases * sq(1 - Cost1) : 0;
+    double BreakEven = Rss - RssBreakEven; // min reduction that keeps GCV flat
+    if(BreakEven < 0)
+        BreakEven = 0;
+    if(BreakEven > RssDelta)
+        BreakEven = RssDelta;              // floor can never exceed the ceiling
+    double costFrac = Cost1;
+    if(costFrac < 0) costFrac = 0;
+    if(costFrac > 1) costFrac = 1;
+    const double gamma = 1 / EffectCap - 1; // > 0 for EffectCap < 1
+    double slackFactor = pow(1 - costFrac, gamma);
+    if(slackFactor < 0) slackFactor = 0;
+    if(slackFactor > 1) slackFactor = 1;
+    double DeltaRssMax = BreakEven + slackFactor * (RssDelta - BreakEven);
+    if(DeltaRssMax < 0)
+        DeltaRssMax = 0;
+    if(DeltaRssMax > RssDelta)
+        DeltaRssMax = RssDelta;            // never charge more than the OLS effect
+    return DeltaRssMax;
+}
+
+//-----------------------------------------------------------------------------
 // Check if model term type is already in model, to avoid a linear dependence.
 // TODO The code in this routine doesn't seem to make sense.
 
@@ -1725,7 +1777,16 @@ static INLINE void FindPredGivenParent(
 
     const int nMinSpan,             // in
     const int nEndSpan,             // in
-    const int nStartSpan)           // in
+    const int nStartSpan,           // in
+
+    // FEAT-002 Stage-2 hinge-vs-linear form competition (all no-ops unless
+    // AdaptiveGcv && EffectCap < 1):
+    const bool AdaptiveGcv,         // in: true to enable the experimental Adaptive GCV Effect Cap
+    const double EffectCap,         // in: cap strength
+    const double Penalty,           // in: GCV penalty per knot
+    const bool AutoLinPreds,        // in: assume predictor linear if knot is min predictor value
+    const int nUsedTerms,           // in: used terms before this candidate (nOldUsedTerms)
+    const int nKnotsOld)            // in: explicit knot count before this candidate
 {
     ybxSum = (double*)malloc1(nResp * sizeof(double), // working var for FindKnot
                         "ybxSum\t\tnResp %d sizeof(double) %d",
@@ -1751,6 +1812,25 @@ static INLINE void FindPredGivenParent(
             double UnadjustedRssDeltaLin = 0;
             bool IsNewForm = GetNewFormFlag(iPred, iParent, Dirs,
                                             FullSet, nTerms, nPreds, nMaxTerms);
+            // FEAT-002 Stage-2: automatic hinge-vs-linear form competition.
+            // When ON, the linear-vs-hinge choice for THIS predictor is decided
+            // by comparing the two forms' JUSTIFIED (capped) effects under the
+            // Stage-1 per-term-complexity budget instead of their raw RssDelta.
+            // The gate requires:
+            //   * AdaptiveGcv && EffectCap < 1 (feature enabled and cap binds),
+            //   * this is the non-weighted path (FindPredGivenParent, yw==NULL),
+            //   * AutoLinPreds is on (default): under Auto.linpreds=FALSE the
+            //     forward pass forces LinPredIsBest=false, so a Stage-2 linear
+            //     selection would be overridden -- we suppress the competition
+            //     entirely there to keep earth's "don't infer linearity"
+            //     contract (documented in man/earth.Rd),
+            //   * both forms genuinely exist for this iPred/iParent, i.e. the
+            //     predictor is not forced linear (!LinPreds[iPred]) and a new
+            //     linear form is available (IsNewForm).
+            // When OFF (the default, incl. adaptive.gcv=FALSE), the block below
+            // is byte-for-byte the stock raw-RssDelta comparison.
+            bool FormCompete = AdaptiveGcv && EffectCap < 1 && AutoLinPreds
+                                     && IsNewForm && !LinPreds[iPred];
             if(IsNewForm) {
                 // Create a candidate term at bx[,nTerms],
                 // with iParent and iPred entering linearly
@@ -1760,6 +1840,9 @@ static INLINE void FindPredGivenParent(
                     iPred, iParent, x, y,
                     nCases, nResp, nTerms, nMaxTerms, bx, FullSet);
                 RssDeltaLin = NewVarAdjust * UnadjustedRssDeltaLin;
+                if(!IsNewForm)
+                    FormCompete = false; // AddCandidateLinearTerm found no genuine
+                                         // new linear form -> no competition
                 tprintf(8,
 "\n|Parent %-2d Pred %-2d Case   -1 Cut % 12.4g< Rss %-12.5g",
                         iParent+IOFFSET, iPred+IOFFSET,
@@ -1781,7 +1864,11 @@ static INLINE void FindPredGivenParent(
 #endif
                 if(RssDeltaLin > *pBestRssDeltaForParent)
                     *pBestRssDeltaForParent = RssDeltaLin;
-                if(RssDeltaLin > *pBestRssDeltaForTerm) {
+                // When FormCompete is on we defer the linear-vs-hinge decision
+                // until after FindKnot (below), scoring both forms by justified
+                // effect.  Otherwise this is the stock: the linear form updates
+                // the shared best immediately if it beats other candidates.
+                if(!FormCompete && RssDeltaLin > *pBestRssDeltaForTerm) {
                     // The new term (with predictor entering linearly) beats other
                     // candidate terms so far.
                     tprintf(9, " best for term (lin pred)");
@@ -1811,7 +1898,93 @@ static INLINE void FindPredGivenParent(
 
                 if(RssDeltaForParPredPair > *pBestRssDeltaForParent)
                     *pBestRssDeltaForParent = RssDeltaForParPredPair;
-                if(RssDeltaForParPredPair > *pBestRssDeltaForTerm) {
+                if(FormCompete) {
+                    // FEAT-002 Stage-2: choose the linear or hinge form of THIS
+                    // predictor by JUSTIFIED (capped) effect, not raw RssDelta.
+                    // iBestCase >= 0 means FindKnot found a hinge that beats the
+                    // linear form on RAW effect, so both forms genuinely compete;
+                    // iBestCase < 0 means the linear form already wins raw (and
+                    // hence also justified), so admit it.
+                    //
+                    // The linear form is charged deltaTerms=1, deltaKnots=0 (a
+                    // bigger slackFactor -> shrunk less); the hinge form is
+                    // charged deltaTerms=2, deltaKnots=1 (per the Stage-1
+                    // simplification: an interaction/degree>=2 hinge is still
+                    // charged a single knot, so the divergence signal is weaker
+                    // for interaction terms -- documented in man/earth.Rd).
+                    //
+                    // CRITICAL: the value written to *pBestRssDeltaForTerm (which
+                    // drives cross-predictor SELECTION and the forward RSS
+                    // bookkeeping) stays the RAW RssDelta of the CHOSEN form, so
+                    // the cap remains a pure SAVE-and-apply mechanism (the
+                    // ForwardPass cap block re-derives DeltaRssMax from the chosen
+                    // form's deltaKnots after AddTermPair).  Only WHICH form is
+                    // chosen changes here.
+                    //
+                    // BEHAVIORAL ASYMMETRY (intended, documented here so it is
+                    // not latent): the competition is per-predictor, but the
+                    // cross-predictor best is still selected on RAW effect.  When
+                    // the LINEAR form wins the per-predictor justified competition
+                    // (linWins) but its raw RssDeltaLin does NOT beat the current
+                    // cross-predictor best (*pBestRssDeltaForTerm), NEITHER form
+                    // updates the shared best -- so a hinge that stock earth would
+                    // have admitted for this predictor (its raw
+                    // RssDeltaForParPredPair exceeding the best) can be SUPPRESSED.
+                    // This follows directly from "compete per predictor, then
+                    // select across predictors on raw effect": the linear form won
+                    // locally, so the hinge is not offered.  It is a deliberate
+                    // consequence of the form competition, not a bug.
+                    const double justifiedLin = JustifiedEffect(RssDeltaLin,
+                                1, 0, nUsedTerms, nKnotsOld,
+                                RssBeforeNewTerm, Penalty, EffectCap, nCases);
+                    const bool hingeAvailable = (iBestCase >= 0);
+                    const double justifiedHinge = hingeAvailable
+                                ? JustifiedEffect(RssDeltaForParPredPair,
+                                    2, 1, nUsedTerms, nKnotsOld,
+                                    RssBeforeNewTerm, Penalty, EffectCap, nCases)
+                                : -1;
+                    const bool linWins = !hingeAvailable
+                                         || justifiedLin >= justifiedHinge;
+                    if(linWins) {
+                        // Admit the LINEAR form.  Bookkeeping value = RAW
+                        // RssDeltaLin (NOT the capped value).
+                        if(RssDeltaLin > *pBestRssDeltaForTerm) {
+                            tprintf(7,
+"|Parent %-2d Pred %-2d Case   -1 Cut % 12.4g  Rss %-12.5g RssDelta %-12.5g    "
+"form-compete lin (jLin %g >= jHinge %g)\n",
+                                iParent+IOFFSET, iPred+IOFFSET,
+                                GetCut(0, iPred, nCases, x, xOrder),
+                                MaybeZero(RssBeforeNewTerm - RssDeltaLin),
+                                MaybeZero(RssDeltaLin),
+                                justifiedLin, justifiedHinge);
+                            UpdatedBestRssDelta = true;
+                            *pBestRssDeltaForTerm = RssDeltaLin;
+                            *pLinPredIsBest = true;
+                            *piBestCase     = 0;
+                            *piBestPred     = iPred;
+                            *piBestParent   = iParent;
+                        }
+                    } else if(RssDeltaForParPredPair > *pBestRssDeltaForTerm) {
+                        // Admit the HINGE form.  Bookkeeping value = RAW hinge
+                        // RssDeltaForParPredPair.
+                        tprintf(7,
+"|Parent %-2d Pred %-2d Case %4d Cut % 12.4g  Rss %-12.5g RssDelta %-12.5g    "
+"form-compete hinge (jHinge %g > jLin %g)\n",
+                            iParent+IOFFSET, iPred+IOFFSET,
+                            iBestCase+IOFFSET,
+                            GetCut(iBestCase, iPred, nCases, x, xOrder),
+                            MaybeZero(RssBeforeNewTerm - RssDeltaForParPredPair),
+                            MaybeZero(RssDeltaForParPredPair),
+                            justifiedHinge, justifiedLin);
+                        UpdatedBestRssDelta = true;
+                        *pBestRssDeltaForTerm = RssDeltaForParPredPair;
+                        *pLinPredIsBest = false;
+                        *piBestCase     = iBestCase;
+                        *piBestPred     = iPred;
+                        *piBestParent   = iParent;
+                        *pIsNewForm     = IsNewForm;
+                    }
+                } else if(RssDeltaForParPredPair > *pBestRssDeltaForTerm) {
                     tprintf(7,
 "|Parent %-2d Pred %-2d Case %4d Cut % 12.4g  Rss %-12.5g RssDelta %-12.5g    %s\n",
                         iParent+IOFFSET, iPred+IOFFSET,
@@ -2236,7 +2409,16 @@ static void FindTerm(
     const int Dirs[],             // in:
     const int nFastK,             // in: Fast MARS K
     const double NewVarPenalty,   // in: penalty for adding a new variable (default is 0)
-    const int LinPreds[])         // in: nPreds x 1, 1 if predictor must enter linearly
+    const int LinPreds[],         // in: nPreds x 1, 1 if predictor must enter linearly
+
+    // FEAT-002 Stage-2 hinge-vs-linear form competition (all no-ops unless
+    // AdaptiveGcv && EffectCap < 1 && yw == NULL):
+    const bool AdaptiveGcv,       // in: true to enable the experimental Adaptive GCV Effect Cap
+    const double EffectCap,       // in: cap strength
+    const double Penalty,         // in: GCV penalty per knot
+    const bool AutoLinPreds,      // in: assume predictor linear if knot is min predictor value
+    const int nUsedTerms,         // in: used terms before this candidate (nOldUsedTerms)
+    const int nKnotsOld)          // in: explicit knot count before this candidate
 {
 #if !FAST_MARS // prevent compiler warning: unused parameter
     int Dummy = nFastK;
@@ -2328,7 +2510,9 @@ static void FindTerm(
                     bx, yMean, RssBeforeNewTerm, MaxLegalRssDelta,
                     iParent, x, y, nCases, nResp, nPreds, nTerms, nMaxTerms,
                     FullSet, xOrder, nUses, Dirs, NewVarPenalty, LinPreds,
-                    nMinSpan, nEndSpan, nStartSpan);
+                    nMinSpan, nEndSpan, nStartSpan,
+                    AdaptiveGcv, EffectCap, Penalty, AutoLinPreds,
+                    nUsedTerms, nKnotsOld);
 #if FAST_MARS
             UpdateRssDeltaInQ(iParent, nTerms, BestRssDeltaForParent);
 #endif
@@ -2747,7 +2931,10 @@ static void ForwardPass(
     const double AdjustEndSpan,  // in:
     const bool AutoLinPreds,     // in: assume predictor linear if knot is min predictor value
     const bool UseBetaCache,     // in: true to use the beta cache, for speed
-    const char* sPredNames[])    // in: predictor names, can be NULL
+    const char* sPredNames[],    // in: predictor names, can be NULL
+    const bool AdaptiveGcv,      // in: true to enable the experimental Adaptive GCV Effect Cap
+    const double EffectCap,      // in: cap strength (max delta-R^2 a single term may explain), AdaptiveGcv only
+    double yHatCap[])            // out: nCases x nResp capped forward fit (AdaptiveGcv only, else NULL)
 {
     tprintf(5, "earth.c %s\n", VERSION);
     CheckForwardPassArgs(x, y, yw, WeightsArg, nCases, nResp, nPreds,
@@ -2810,7 +2997,63 @@ static void ForwardPass(
         yMean[iResp]  = Mean(&y_(0,iResp), nCases);
     const double RssNull = GetRssNull(y, WeightsArg, nCases, nResp);
     double Rss = RssNull, RssDelta = RssNull, RSq = 0, RSqDelta = 0;
+
+    // ---------------------------------------------------------------------
+    // Adaptive GCV Effect Cap (FEAT-002), experimental, default OFF.
+    //
+    // WHY THE CAP IS MATERIALISED IN THE FINAL FIT (not via the forward search).
+    // earth's forward pass only SELECTS terms/knots; the returned coefficients
+    // come from an UNCONSTRAINED lm.fit(bx, y) over the pruned term set (see
+    // earth.fit.R).  Moreover FindTerm scores each candidate on the component
+    // of the response ORTHOGONAL to the current basis, so subtracting the
+    // admitted terms' projections from a working response does NOT change any
+    // candidate score (that component is orthogonal to what is removed).  A
+    // forward-pass-only residual/RSS trick therefore cannot change the selected
+    // terms nor the returned fit -- it is a provable no-op.  The cap must
+    // instead be SAVED during the forward pass and APPLIED to the final fit.
+    //
+    // Mechanism (SAVE-THE-CONSTRAINT, per the design decision the spec asks for):
+    //   * Forward SELECTION is left byte-for-byte identical to stock earth:
+    //     FindTerm still scores against the raw response y.
+    //   * For each admitted term we compute the GCV-justified effect budget
+    //     delta-RSS_max (from earth's own GetGcv machinery) and, if the term's
+    //     unconstrained incremental effect RssDelta exceeds it, a per-term cap
+    //     scale s = b_max/bhat in (0,1) (closed form, B^T B = 1 orthonormal
+    //     basis).  Uncapped terms get s = 1.
+    //   * We accumulate the CAPPED forward fit yHatCap in original response
+    //     space:  yHatCap = yMean + sum_k s_(term(k)) * bhat_k * bxOrth[,k],
+    //     where bhat_k = <y_centred, bxOrth[,k]> is the OLS coef on orthonormal
+    //     column k.  yHatCap is exactly stock earth's forward fit for uncapped
+    //     terms and holds back the un-justified effect of capped (dominant)
+    //     terms.
+    //   * yHatCap is returned to earth.fit.R.  When adaptive.gcv=TRUE the final
+    //     coefficients are the CONSTRAINED least-squares fit of the pruned bx to
+    //     yHatCap (i.e. lm.fit(bx, yHatCap)) instead of lm.fit(bx, y).  This
+    //     lets the other (un-capped) terms absorb the residual the dominant term
+    //     is not allowed to explain -- the spec's central intent -- and the
+    //     constraint survives into the returned model, predictions, and summary.
+    //
+    // The cap is only applied on the non-weighted orthonormal-basis path
+    // (yw == NULL) where bhat_k = <y,bxOrth[,k]> holds exactly; the weighted
+    // path uses a different knot search, so capping is disabled there
+    // (documented in man/earth.Rd).  When DoCap is false the block below is a
+    // no-op and yHatCap is never touched.
+    const bool DoCap = AdaptiveGcv && Penalty != -1 && yw == NULL && yHatCap != NULL;
+    if(DoCap) {
+        for(int iResp = 0; iResp < nResp; iResp++)
+            for(int i = 0; i < (const int)nCases; i++)
+                yHatCap[i + iResp*nCases] = yMean[iResp]; // start at the intercept fit
+    }
+    #define yHatCap_(i,iResp) yHatCap[(i) + (iResp)*(nCases)]
     int nUsedTerms = 1;     // number of used basis terms including intercept, for GCV calc
+    // Running EXPLICIT knot count of the current model (FEAT-004).  The cap's
+    // per-term complexity charge (below) uses this instead of the model-wide
+    // averaged approximation (nUsedTerms-1)/2, so the budget reflects THIS
+    // candidate's true marginal complexity: a linear/linpreds term adds 0
+    // knots, a hinge term adds 1 knot.  It is incremented by deltaKnots on each
+    // accepted step and is only read on the DoCap path (no effect when DoCap is
+    // false, so the stock trajectory is untouched).
+    int nKnotsOld = 0;
     double Gcv = 0, GcvNull = GetGcv(nUsedTerms, nCases, RssNull, Penalty);
     PrintForwardProlog(nCases, nPreds, nMaxTerms, sPredNames, yw != NULL);
 #if FAST_MARS
@@ -2836,7 +3079,8 @@ static void ForwardPass(
             bxOrth, bxOrthCenteredT, bxOrthMean,
             bx, x, y, yw, nCases, nResp, nPreds, nMaxDegree, nTerms, nMaxTerms,
             yMean, Rss, MaxLegalRssDelta, FullSet, xOrder, nDegree,
-            nUses, Dirs, nFastK, NewVarPenalty, LinPreds);
+            nUses, Dirs, nFastK, NewVarPenalty, LinPreds,
+            AdaptiveGcv, EffectCap, Penalty, AutoLinPreds, nUsedTerms, nKnotsOld);
 
         // following code added for Auto.linpreds (earth version 4.6.0, Dec 2017)
         if((LinPredIsBest && iBestCase != 0) || // paranoia, should never happen
@@ -2853,15 +3097,190 @@ static void ForwardPass(
                 nMaxTerms, LinPredIsBest, LinPreds, x, xOrder, yw != NULL);
 
         const bool IsTermPair = iBestCase > 0 && IsNewForm;
+        const int nOldUsedTerms = nUsedTerms; // complexity BEFORE this term is admitted
         nUsedTerms++;
         if(IsTermPair)
             nUsedTerms++;     // add paired term
+
+        // ---------------------------------------------------------------------
+        // Adaptive GCV Effect Cap (FEAT-002), experimental, default OFF.
+        //
+        // When DoCap is false (the default, or the weighted path) the block
+        // below is a no-op: yHatCap is never touched and every quantity that
+        // drives selection / GCV / stopping (Rss, RssDelta, nUsedTerms, Gcv) is
+        // byte-for-byte identical to stock earth.  The cap NEVER alters term
+        // selection; it is SAVED here and APPLIED to the final fit in
+        // earth.fit.R (see the block comment at the top of ForwardPass).
+        //
+        // The forward pass works in an ORTHONORMAL basis (bxOrth columns have
+        // unit length, so B^T B = 1).  On the orthonormal column(s) k of the
+        // just-admitted term the OLS coefficient is bhat_k = <y_centred,
+        // bxOrth[,k]> and the term's unconstrained incremental effect is
+        // RssDelta = sum_k bhat_k^2.  We derive a GCV-justified effect budget
+        // DeltaRssMax from earth's own GetGcv machinery: the largest RSS
+        // reduction that does NOT increase GCV once the term's complexity is
+        // charged.  GCV = Rss/(n*(1-C/n)^2), so the break-even RSS at the new
+        // (higher) complexity C1 giving the same GCV as the current model is
+        // RssBreakEven = GcvOld*n*(1-C1/n)^2, hence
+        //   DeltaRssMax = Rss - RssBreakEven   (clamped to [0, RssDelta]).
+        //
+        // If RssDelta <= DeltaRssMax the term is admitted normally (scale s = 1)
+        // and its full projection is accumulated into yHatCap -- identical to
+        // stock earth's forward fit.  If RssDelta > DeltaRssMax the term is
+        // SATURATED: we solve (2s - s^2)*RssDelta = DeltaRssMax for the common
+        // scale s in (0,1), i.e. s = 1 - sqrt(1 - DeltaRssMax/RssDelta), so the
+        // realised effect of the scaled term equals exactly DeltaRssMax.  This
+        // is the spec's closed form b_max = s*bhat = bhat - sqrt(bhat^2 -
+        // DeltaRssMax) applied per orthonormal direction.  We then accumulate
+        // only s*bhat_k*bxOrth[,k] into yHatCap, holding back the un-justified
+        // effect of this (dominant) term.
+        // FEAT-004: per-term marginal complexity of the just-admitted term.
+        // A linear/linpreds term (LinPredIsBest, no knot) adds deltaTerms=1 and
+        // deltaKnots=0; a genuine hinge term-pair adds deltaTerms=2 and
+        // deltaKnots=1 (exactly one knot).  These match how nUsedTerms was
+        // incremented above.  We use this EXPLICIT per-term knot charge in the
+        // budget's complexity cost Cost1 below, so the cap reflects THIS
+        // candidate's true marginal complexity (the spec's "candidate
+        // complexity" input) rather than the model-wide averaged approximation
+        // (nUsedTerms-1)/2.
+        const int deltaTerms = IsTermPair ? 2 : 1;
+        // NOTE (deliberate simplification): a degree>=2 interaction hinge is
+        // charged the SAME single knot (deltaKnots=1) as a degree-1 hinge, even
+        // though an interaction hinge is arguably more complex.  This is a
+        // first-cut simplification, so the hinge-vs-linear divergence signal is
+        // correspondingly weaker for interaction (degree>=2) terms than for
+        // degree-1 hinges (visible in the ozone1 numbers of the OOS study).
+        const int deltaKnots = (IsTermPair && !LinPredIsBest) ? 1 : 0;
+
+        double CapScale = 1; // s: 1 if uncapped, in (0,1) if saturated
+        double Cost1 = 0, BreakEven = 0, slackFactor = 1; // trace-only diagnostics
+        if(DoCap && iBestCase >= 0 && RssDelta > 0) {
+            // ADAPTIVE, per-term-complexity-aware effect budget (spec Strategy 2,
+            // "Incremental GCV budget").  The maximum justified incremental
+            // effect DeltaRssMax lies BETWEEN two anchors:
+            //
+            //   floor  = BreakEven : the smallest RSS reduction that does NOT
+            //            increase GCV once this term's complexity is charged.  A
+            //            term always keeps at least the effect that pays for its
+            //            own complexity, so a barely-justified term is never
+            //            over-capped (a NAIVE hard cap at break-even was found to
+            //            over-cap everything and collapse RSq -- see FEAT-002
+            //            findings; that is why we interpolate with slack rather
+            //            than clamp at the floor).
+            //   ceiling = RssDelta : the unconstrained OLS effect; we never
+            //            charge more than the term actually explains.
+            //
+            // We interpolate:  DeltaRssMax = BreakEven + slackFactor*(RssDelta -
+            // BreakEven), where slackFactor in [0,1] shrinks as the model's
+            // per-term complexity cost rises and grows with effect.cap:
+            //
+            //   costFrac    = clamp(Cost1, 0, 1)                (rises toward 1
+            //                 as the model consumes complexity)
+            //   gamma       = 1/EffectCap - 1                   (>=0 for
+            //                 EffectCap in (0,1]; 0 at EffectCap==1)
+            //   slackFactor = (1 - costFrac)^gamma
+            //
+            // Properties (spec-required):
+            //   (i)   EffectCap >= 1 => gamma <= 0 => slackFactor == 1 =>
+            //         DeltaRssMax == RssDelta => CapScale == 1 => stock earth
+            //         (enforced exactly by the EffectCap>=1 fast-path below).
+            //   (ii)  For a given EffectCap<1, a HINGE term (deltaKnots=1) has a
+            //         higher Cost1 than a LINEAR term (deltaKnots=0) with the
+            //         same OLS effect, hence a larger costFrac, a SMALLER
+            //         slackFactor, and a SMALLER DeltaRssMax: the hinge is shrunk
+            //         more than the cheaper linear form.
+            //   (iii) DeltaRssMax is clamped to [0, RssDelta] and never negative.
+            //   (iv)  As model complexity grows (costFrac up), slackFactor
+            //         shrinks => progressively stronger regularization (the
+            //         spec's central hypothesis).
+            //
+            // Cost1 uses the EXPLICIT per-term knot charge (deltaTerms/deltaKnots
+            // and the running nKnotsOld) -- NOT (nUsedTerms-1)/2.
+            // Cost1 / BreakEven / slackFactor are recomputed here purely for the
+            // trace-only diagnostics below; the actual capped effect DeltaRssMax
+            // comes from the shared JustifiedEffect helper so this site and the
+            // Stage-2 form competition in FindPredGivenParent cannot diverge.
+            Cost1 = (nOldUsedTerms + deltaTerms
+                        + Penalty * (nKnotsOld + deltaKnots)) / nCases;
+            const double GcvOld = GetGcv(nOldUsedTerms, nCases, Rss, Penalty);
+            const double RssBreakEven = (Cost1 < 1)
+                        ? GcvOld * nCases * sq(1 - Cost1) : 0;
+            BreakEven = Rss - RssBreakEven; // min reduction that keeps GCV flat
+            if(BreakEven < 0)
+                BreakEven = 0;
+            if(BreakEven > RssDelta)
+                BreakEven = RssDelta;       // floor can never exceed the ceiling
+            if(EffectCap >= 1)
+                slackFactor = 1;            // fast-path: cap never binds
+            else {
+                double costFrac = Cost1;
+                if(costFrac < 0) costFrac = 0;
+                if(costFrac > 1) costFrac = 1;
+                const double gamma = 1 / EffectCap - 1; // > 0 for EffectCap<1
+                slackFactor = pow(1 - costFrac, gamma);
+                if(slackFactor < 0) slackFactor = 0;
+                if(slackFactor > 1) slackFactor = 1;
+            }
+            const double DeltaRssMax = JustifiedEffect(RssDelta,
+                        deltaTerms, deltaKnots, nOldUsedTerms, nKnotsOld,
+                        Rss, Penalty, EffectCap, nCases);
+
+            if(RssDelta > DeltaRssMax) {
+                // solve (2s - s^2)*RssDelta = DeltaRssMax for the scale s in (0,1)
+                CapScale = 1 - sqrt(1 - DeltaRssMax / RssDelta);
+                const double bhat = sqrt(RssDelta);          // OLS coef, B^T B = 1
+                const double bmax = CapScale * bhat;         // capped coef
+                tprintf(6,
+                    "effectcap CAP: iTerm %-3d bhat %-12.5g dRSS(ols) %-12.5g "
+                    "dRSSmax %-12.5g bmax %-12.5g scale %-12.5g deltaKnots %-2d "
+                    "Cost1 %-12.5g BreakEven %-12.5g slackFactor %-12.5g\n",
+                    nTerms, bhat, RssDelta, DeltaRssMax, bmax, CapScale,
+                    deltaKnots, Cost1, BreakEven, slackFactor);
+            }
+
+            // Accumulate this term's (possibly scaled) contribution into the
+            // capped forward fit yHatCap.  bxOrth columns are orthonormal, so
+            // the OLS coefficient on column iCol is the dot product with the
+            // response, and the contribution to the fit is that coef times the
+            // column.  Scaling by CapScale realises the effect cap.
+            for(int iCol = nTerms; iCol <= nTerms + 1; iCol++) {
+                if(iCol >= nMaxTerms || !FullSet[iCol])
+                    continue;
+                for(int iResp = 0; iResp < nResp; iResp++) {
+                    double bhat_k = 0;
+                    for(int i = 0; i < (const int)nCases; i++)
+                        bhat_k += y_(i,iResp) * bxOrth_(i,iCol);
+                    const double contrib = CapScale * bhat_k;
+                    for(int i = 0; i < (const int)nCases; i++)
+                        yHatCap_(i,iResp) += contrib * bxOrth_(i,iCol);
+                }
+            }
+        }
         Rss -= RssDelta;
         Rss = MaybeZero(Rss); // RSS can go slightly neg due to numerical error
         Gcv = GetGcv(nUsedTerms, nCases, Rss, Penalty);
         const double OldRSq = RSq;
         RSq = 1 - Rss / RssNull;
         RSqDelta = MaybeZero(RSq - OldRSq);
+
+        // Diagnostics-only instrumentation (trace >= 6, well above any level
+        // used by the test suite).  Reports, for each accepted term, the state
+        // that the Adaptive GCV Effect Cap (FEAT-002) will reason about: the
+        // current RSS, the (unconstrained) RssDelta just realized, the current
+        // effective complexity (nUsedTerms), and the current GCV.  This is a
+        // read-only probe: it does not modify Rss, RssDelta, nUsedTerms, Gcv,
+        // or any model state, so it cannot change numeric output at any trace
+        // level.
+        tprintf(6,
+            "effectcap diag: iTerm %-3d RSS %-12.5g RssDelta(ols) %-12.5g "
+            "capScale %-12.5g complexity(nUsedTerms) %-3d GCV %-12.5g "
+            "deltaKnots %-2d Cost1 %-12.5g BreakEven %-12.5g slackFactor %-12.5g\n",
+            nTerms, Rss, RssDelta, CapScale, nUsedTerms, Gcv,
+            deltaKnots, Cost1, BreakEven, slackFactor);
+
+        // FEAT-004: advance the running explicit knot count now that the term
+        // has been admitted (used by the cap budget on the next iteration).
+        nKnotsOld += deltaKnots;
 
         PrintForwardStep(nTerms, nUsedTerms, iBestCase, iBestPred,
             iBestParent, iBestParent < 0? 0: nDegree[iBestParent]+1,
@@ -2914,6 +3333,7 @@ static void ForwardPass(
 #if FAST_MARS
     FreeQ();
 #endif
+    #undef yHatCap_
     free1(yMean);
     free1(bxOrthMean);
     free1(bxOrthCenteredT);
@@ -2956,7 +3376,10 @@ SEXP ForwardPassR(             // for use by R
     SEXP SEXP_nAutoLinPreds,   // in: assume predictor linear if knot is min predictor value
     SEXP SEXP_nUseBetaCache,   // in: 1 to use the beta cache, for speed
     SEXP SEXP_Trace,           // in: 0 none 1 overview 2 forward 3 pruning 4 more pruning
-    SEXP SEXP_sPredNames)      // in: predictor names in trace printfs
+    SEXP SEXP_sPredNames,      // in: predictor names in trace printfs
+    SEXP SEXP_AdaptiveGcv,     // in: 1 to enable experimental Adaptive GCV Effect Cap (FEAT-002)
+    SEXP SEXP_EffectCap,       // in: cap strength (max delta-R^2 a single term may explain)
+    SEXP SEXP_yHatCap)         // out: nCases x nResp capped forward fit (AdaptiveGcv only)
 {
     const size_t nCases       = (size_t)(INTEGER(SEXP_nCases)[0]);
     const int nResp           = INTEGER(SEXP_nResp)[0];
@@ -3018,7 +3441,10 @@ SEXP ForwardPassR(             // for use by R
             REAL(SEXP_FastBeta)[0], REAL(SEXP_NewVarPenalty)[0],
             INTEGER(SEXP_LinPreds), REAL(SEXP_AdjustEndSpan)[0],
             INTEGER(SEXP_nAutoLinPreds)[0], INTEGER(SEXP_nUseBetaCache)[0] != 0,
-            sPredNames);
+            sPredNames,
+            INTEGER(SEXP_AdaptiveGcv)[0] != 0,
+            REAL(SEXP_EffectCap)[0],
+            (INTEGER(SEXP_AdaptiveGcv)[0] != 0)? REAL(SEXP_yHatCap): NULL);
 
     FreeAllowedFunc(); // calls R_ReleaseObject
 
