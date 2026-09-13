@@ -669,15 +669,33 @@ that row, inflating its apparent value. Instead:
 Then fit `earth(cbind(x_train, bir_pred = oof_train), y_train, degree = 2)` and
 score on `cbind(x_test, bir_pred = test_pred)`, preserving column names/order.
 
-**Seed / K scheme.** `SEED = 2024` throughout. Fold labels are drawn once under
-`set.seed(SEED)` (fixed given `SEED` and `K`). BIR's CV-lasso penalty selection
-(`cv.lars`) consumes the global RNG, so `set.seed(SEED)` is called immediately
-before *each* fold fit and before the single full-train fit, making every fit
-independently reproducible. Outer protocol is the harness standard: 70/30 outer
-holdout, `n = 10` BIR buckets (4 for the solubility smoke), degree-2 `earth`.
-`K = 5` for the cheap datasets; **`K = 3` for solubility-full** to keep it within
-the cost budget (see below). The out-of-fold scheme fits BIR `K + 1` times per
-dataset.
+**Seed / K scheme (deterministic from a clean install).** `SEED = 2024`
+throughout. Fold labels are drawn once under `set.seed(SEED)` (fixed given
+`SEED` and `K`). **The exact stacked-earth magnitude is seed-sensitive**: BIR's
+CV-lasso penalty selection (`lars::cv.lars`) draws its cross-validation folds
+from the **global RNG** across all `K + 1` BIR fits, so the fitted lasso penalty
+— and therefore every `bir_pred` value and every downstream `earth` number —
+depends on the seeding scheme and on the RNG algorithm in effect. The canonical
+scheme that makes the numbers below reproduce identically on every fresh session
+is:
+
+1. `eval_common.R` pins the RNG algorithm at load time with
+   `RNGkind("Mersenne-Twister", "Inversion", "Rejection")` (the R ≥ 3.6
+   default), so `set.seed(SEED)` selects the same stream on any host R and does
+   not silently shift with an older/non-default sampler.
+2. `set.seed(SEED)` is called immediately before *each* fold fit **and** before
+   the single full-train fit. Because every fit re-seeds from the fixed constant
+   `SEED` rather than continuing the accumulated stream, the number of prior BIR
+   fits / RNG draws cannot change a given fit — each fit is independently
+   reproducible.
+
+Outer protocol is the harness standard: 70/30 outer holdout, `n = 10` BIR
+buckets (4 for the solubility smoke), degree-2 `earth`. `K = 5` for the cheap
+datasets; **`K = 3` for solubility-full** to keep it within the cost budget (see
+below). The out-of-fold scheme fits BIR `K + 1` times per dataset. All numbers
+in this section were verified to reproduce byte-for-byte across two consecutive
+fresh `Rscript eval_stacking.R <dataset>` runs on a clean `R CMD INSTALL` of the
+current `bucketimpute` source (seed 2024, R 4.5.x).
 
 Reproduce (each dataset a separate timed invocation):
 

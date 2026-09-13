@@ -16,6 +16,19 @@ suppressMessages({
 
 SEED <- 2024
 
+## Pin the RNG algorithm so results are reproducible across R installations,
+## not merely within one machine's default. BIR's penalty selection uses
+## lars::cv.lars, whose cross-validation folds are drawn from the GLOBAL RNG;
+## if the ambient sampler differs (e.g. an older R with the pre-3.6
+## "Rounding" sample.kind, or a non-default RNGkind), the exact fold draws and
+## therefore the fitted lasso penalty shift, moving every downstream number.
+## Fixing the kind to the R >= 3.6 default here means set.seed(SEED) selects
+## the SAME stream everywhere, so the study reproduces from a clean install
+## regardless of the host R's default sampler.
+suppressWarnings(
+  RNGkind("Mersenne-Twister", "Inversion", "Rejection")
+)
+
 ## Root-mean-squared error.
 rmse <- function(actual, predicted) {
   sqrt(mean((as.numeric(actual) - as.numeric(predicted))^2))
@@ -82,12 +95,20 @@ run_earth <- function(x_train, y_train, x_test, degree = 2, ...) {
 ## bir_pred ever used a BIR that saw that row. The TEST-row bir_pred is produced
 ## by a SINGLE BIR fit on the FULL training split.
 ##
-## Reproducibility / seed scheme:
+## Reproducibility / seed scheme (deterministic from a CLEAN install):
+##   * The RNG algorithm is pinned once at the top of this file
+##     (RNGkind("Mersenne-Twister", "Inversion", "Rejection")), so set.seed()
+##     selects the identical stream on any R >= 3.6 host.
 ##   * Fold assignment uses set.seed(SEED) then sample() of fold labels, so the
-##     partition is fixed given SEED and K.
+##     partition is fixed given SEED and K, and does NOT depend on any RNG
+##     state left behind by earlier code in the session.
 ##   * BIR's CV-lasso penalty selection (cv.lars) consumes the global RNG, so
-##     EACH fold fit and the full-train fit call set.seed(SEED) immediately
-##     before fit_bir(). This makes every fit independently reproducible.
+##     EACH fold fit AND the full-train fit call set.seed(SEED) immediately
+##     before fit_bir(). Because every fit re-seeds from a fixed constant (not
+##     from the accumulated stream), the number of BIR fits / RNG draws that
+##     precede a given fit cannot change its result: every fit is independently
+##     reproducible. This is what makes `Rscript eval_stacking.R <ds>` produce
+##     identical numbers on every fresh session.
 ##
 ## Returns list(oof_train = <numeric length nrow(x_train)>,
 ##              test      = <numeric length nrow(x_test)>,
