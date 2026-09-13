@@ -72,6 +72,82 @@ run_earth <- function(x_train, y_train, x_test, degree = 2, ...) {
   list(pred = pred, model = fit, seconds = proc.time()[["elapsed"]] - t0)
 }
 
+## ---------------------------------------------------------------------------
+## Out-of-fold (cross-fitted) BIR prediction column for STACKING (FEAT-003).
+##
+## To feed BIR's default affinity_lasso point prediction to the "original
+## model" (plain degree-2 earth) as an EXTRA input column WITHOUT leakage, the
+## training-row bir_pred must be produced out-of-fold: for each of K folds, fit
+## BIR on the other K-1 folds and predict the held-out fold. No training row's
+## bir_pred ever used a BIR that saw that row. The TEST-row bir_pred is produced
+## by a SINGLE BIR fit on the FULL training split.
+##
+## Reproducibility / seed scheme:
+##   * Fold assignment uses set.seed(SEED) then sample() of fold labels, so the
+##     partition is fixed given SEED and K.
+##   * BIR's CV-lasso penalty selection (cv.lars) consumes the global RNG, so
+##     EACH fold fit and the full-train fit call set.seed(SEED) immediately
+##     before fit_bir(). This makes every fit independently reproducible.
+##
+## Returns list(oof_train = <numeric length nrow(x_train)>,
+##              test      = <numeric length nrow(x_test)>,
+##              full_model = <bir fitted on full train>,
+##              K = K, seconds = elapsed, fold_seconds = <per-fold vector>).
+## On a BIR failure in ANY fold or the full fit, returns list(ok = FALSE, ...).
+bir_oof_feature <- function(x_train, y_train, x_test, n = 10, K = 5,
+                            seed = SEED, ...) {
+  x_train <- as.matrix(x_train)
+  x_test  <- as.matrix(x_test)
+  n_tr <- nrow(x_train)
+  t0 <- proc.time()[["elapsed"]]
+
+  ## fixed, reproducible fold labels
+  set.seed(seed)
+  folds <- sample(rep_len(seq_len(K), n_tr))
+
+  oof <- rep(NA_real_, n_tr)
+  fold_seconds <- numeric(K)
+  for (f in seq_len(K)) {
+    in_test  <- which(folds == f)
+    in_train <- which(folds != f)
+    tf0 <- proc.time()[["elapsed"]]
+    set.seed(seed)                       # reproducible cv.lars per fold
+    fit_f <- tryCatch(
+      fit_bir(x_train[in_train, , drop = FALSE], y_train[in_train],
+              n = n, ...),
+      error = function(e) e
+    )
+    if (inherits(fit_f, "error")) {
+      return(list(ok = FALSE,
+                  error = sprintf("fold %d/%d: %s", f, K,
+                                  conditionMessage(fit_f)),
+                  seconds = proc.time()[["elapsed"]] - t0))
+    }
+    oof[in_test] <- as.numeric(
+      predict(fit_f, x_train[in_test, , drop = FALSE], type = "response")
+    )
+    fold_seconds[f] <- proc.time()[["elapsed"]] - tf0
+  }
+
+  ## TEST column: single BIR fit on the FULL training split.
+  set.seed(seed)
+  full_fit <- tryCatch(
+    fit_bir(x_train, y_train, n = n, ...),
+    error = function(e) e
+  )
+  if (inherits(full_fit, "error")) {
+    return(list(ok = FALSE,
+                error = sprintf("full-train fit: %s",
+                                conditionMessage(full_fit)),
+                seconds = proc.time()[["elapsed"]] - t0))
+  }
+  test_pred <- as.numeric(predict(full_fit, x_test, type = "response"))
+
+  list(ok = TRUE, oof_train = oof, test = test_pred, full_model = full_fit,
+       K = K, seconds = proc.time()[["elapsed"]] - t0,
+       fold_seconds = fold_seconds)
+}
+
 ## se calibration sanity check: does a larger predicted se go with a larger
 ## actual absolute residual? We report Spearman correlation plus mean |resid|
 ## per se quartile.

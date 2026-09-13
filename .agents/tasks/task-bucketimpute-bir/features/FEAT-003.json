@@ -1,0 +1,22 @@
+{
+  "id": "FEAT-003",
+  "title": "Stacking experiment: BIR out-of-fold prediction as an extra earth input column",
+  "status": "completed",
+  "description": "Evaluation-only study. Add eval_stacking.R driver plus a bir_oof_feature() out-of-fold helper in eval_common.R, and a new section 10 in BIR-evaluation-results.md. For Boston, synthetic_large, solubility: build x_augmented = [x || bir_pred] where bir_pred is BIR's default affinity_lasso prediction generated OUT-OF-FOLD (K-fold cross-fit on train, single full-train fit for test), fit the original degree-2 earth on it, and report OOS-R2/RMSE for (a) plain earth, (b) stacked earth, (c) BIR alone, plus whether MARS selected the bir_pred term (evimp). No bucketimpute/R/* changes.",
+  "steps": [
+    "Add bir_oof_feature() to inst/eval/eval_common.R (K-fold cross-fit train column, single full-train test column, reproducible seed scheme).",
+    "Add inst/eval/eval_stacking.R driver (per-dataset invocation, K and budget args, evimp inspection, machine-readable STACK_ROW/STACK_USE output).",
+    "Run boston (K=5), synthetic (K=5), solubility-full (K=3, budget) as separate timed invocations; smoke first.",
+    "Write section 10 in BIR-evaluation-results.md with (a)/(b)/(c) table, bir_pred variable-importance finding, honest verdicts, seed/K scheme, cost."
+  ],
+  "findings": {
+    "results": {
+      "Boston": {"plain_earth_r2": 0.8015, "stacked_r2": 0.8692, "bir_alone_r2": 0.6385, "delta_r2": 0.0676, "bir_pred_selected": true, "bir_pred_terms": 2, "K": 5, "oof_seconds": 3.7},
+      "synthetic_large": {"plain_earth_r2": 0.7476, "stacked_r2": 0.7427, "bir_alone_r2": 0.5500, "delta_r2": -0.0048, "bir_pred_selected": false, "bir_pred_terms": 0, "K": 5, "oof_seconds": 72.5},
+      "solubility_full": {"plain_earth_r2": -704.7335, "stacked_r2": -704.7335, "bir_alone_r2": -0.0103, "delta_r2": 0.0, "bir_pred_selected": false, "bir_pred_terms": 0, "K": 3, "oof_seconds": 560.4},
+      "spam": "expected BIR failure at distinct-buckets step; not evaluated"
+    },
+    "verdict": "One clear win (Boston, +0.068 R2, term selected), two neutral results (synthetic and solubility, MARS drops the term so stacked == baseline). No leakage: bir_pred is out-of-fold. Eval-only; no package R code changed.",
+    "environment": "R 4.5.3 on Amazon Linux 2023, packages from /projects/sandbox/.Rcache (R_LIBS). solubility-full ~560s with K=3."
+  }
+}

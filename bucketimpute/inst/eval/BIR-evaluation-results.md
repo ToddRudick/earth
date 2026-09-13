@@ -639,9 +639,124 @@ pass has no interaction candidates to consider. Solubility-full still completes
 foreground in ~170 s. No dataset was reduced or dropped for cost; all ran at
 full size except spam (expected error).
 
+## 10. Stacking: feeding BIR's prediction to earth as an extra column
+
+**Question.** Does giving the *original model* (plain degree-2 `earth`, the
+baseline of every prior section) BIR's point prediction as an **extra input
+column** improve it? We build a stacked design
+
+```
+x_augmented = [ x  ||  bir_pred ]
+```
+
+(the original predictors plus one new column, `bir_pred` = BIR's **default**
+`affinity_lasso` point prediction) and fit the original model on it:
+`earth(x_augmented, y, degree = 2)`. `moe_soft` is **not** used here; `bir_pred`
+is the default affinity-lasso prediction.
+
+**No leakage — the `bir_pred` column is generated out-of-fold.** A naive
+`bir_pred` computed by fitting BIR on the whole training set and predicting the
+same rows would leak: each training row's feature would come from a BIR that saw
+that row, inflating its apparent value. Instead:
+
+- **TRAIN column (cross-fit).** Split the training rows into `K` folds. For each
+  fold `f`, fit BIR on the other `K - 1` folds and predict the held-out fold
+  `f`. Every training row therefore gets a `bir_pred` from a BIR that never saw
+  it.
+- **TEST column.** Fit BIR **once** on the full training split and predict the
+  test rows.
+
+Then fit `earth(cbind(x_train, bir_pred = oof_train), y_train, degree = 2)` and
+score on `cbind(x_test, bir_pred = test_pred)`, preserving column names/order.
+
+**Seed / K scheme.** `SEED = 2024` throughout. Fold labels are drawn once under
+`set.seed(SEED)` (fixed given `SEED` and `K`). BIR's CV-lasso penalty selection
+(`cv.lars`) consumes the global RNG, so `set.seed(SEED)` is called immediately
+before *each* fold fit and before the single full-train fit, making every fit
+independently reproducible. Outer protocol is the harness standard: 70/30 outer
+holdout, `n = 10` BIR buckets (4 for the solubility smoke), degree-2 `earth`.
+`K = 5` for the cheap datasets; **`K = 3` for solubility-full** to keep it within
+the cost budget (see below). The out-of-fold scheme fits BIR `K + 1` times per
+dataset.
+
+Reproduce (each dataset a separate timed invocation):
+
+```sh
+timeout  600 Rscript bucketimpute/inst/eval/eval_stacking.R boston
+timeout 1200 Rscript bucketimpute/inst/eval/eval_stacking.R synthetic
+timeout 1750 Rscript bucketimpute/inst/eval/eval_stacking.R solubility 3 1600
+timeout  180 Rscript bucketimpute/inst/eval/eval_stacking.R smoke
+```
+
+### Results — (a) plain earth vs (b) stacked earth vs (c) BIR alone
+
+| dataset | (a) plain earth `[x]` R2 / RMSE | (b) stacked earth `[x‖bir_pred]` R2 / RMSE | (c) BIR alone R2 / RMSE | Δ R2 (b − a) | `bir_pred` selected by MARS? |
+|---|---|---|---|---|---|
+| Boston | 0.8015 / 3.802 | **0.8692 / 3.087** | 0.6385 / 5.131 | **+0.0676** | **yes** (2 terms; evimp rank 7 of 11 used) |
+| synthetic_large | 0.7476 / 1.057 | 0.7427 / 1.067 | 0.5500 / 1.411 | −0.0048 | no (0 terms) |
+| solubility (full) | −704.73 / 55.13 | −704.73 / 55.13 | −0.0103 / 2.086 | +0.0000 | no (0 terms) |
+| spam | — | — | — | — | expected BIR failure (distinct-buckets, see §3) |
+
+`bir_pred` importance where selected — Boston `evimp` (nsubsets / gcv / rss):
+`bir_pred` = 14 / 20.6 / 23.5, i.e. below `rm`, `lstat`, `ptratio`, `rad`,
+`nox`, `dis` but above `crim`, `age`, `black`, `tax`. It is a genuine mid-table
+contributor, not the dominant term.
+
+### Verdicts (honest, including the null results)
+
+- **Boston: a real, moderate win.** Adding the out-of-fold `bir_pred` column
+  lifts the original earth model from OOS-R2 0.8015 to 0.8692 (RMSE 3.80 → 3.09).
+  MARS actively selected `bir_pred` into 2 of its terms, and `evimp` ranks it a
+  meaningful mid-table variable. Here BIR's affinity structure carries signal the
+  raw predictors did not already expose to a degree-2 MARS.
+
+- **synthetic_large: no benefit; MARS ignores the term.** The stacked model is a
+  hair *worse* (−0.0048 R2) and MARS did **not** select `bir_pred` into any term
+  (0 terms). This is the "recovers ~plain earth because MARS ignores a weak
+  `bir_pred`" outcome anticipated up front: the generator's signal is smooth
+  hinge/interaction structure that degree-2 `earth` already captures directly
+  from `x`, so BIR's prediction adds nothing marginal. The tiny negative delta is
+  the expected cost of one extra useless candidate column in the forward pass.
+
+- **solubility (full): identical to baseline; term never selected.** Plain earth
+  extrapolates catastrophically on this wide 228-predictor set (OOS-R2 ≈ −704.7,
+  as in §3), and the stacked model is **byte-identical** (−704.7) because MARS
+  again selected `bir_pred` into 0 terms. The stacked design neither helps nor
+  hurts here: the pathology is earth's extrapolation on the raw predictors, and a
+  single extra column that MARS declines to use cannot fix it. (BIR alone is the
+  only well-behaved model on this dataset at ≈ −0.01, but the *original model* is
+  what this experiment augments, and it is unchanged.)
+
+**Bottom line.** Stacking BIR's out-of-fold prediction into the original earth
+model helps **only where BIR contributes signal orthogonal to what MARS already
+extracts from the raw predictors** — clearly on Boston, not at all on
+synthetic_large or solubility. On the two datasets where it does not help, MARS
+simply drops the term, so the stacked model degrades to (essentially) the plain
+baseline rather than being harmed. This is exactly the honest, mixed outcome:
+one clear win, two neutral results, and direct evidence (via `evimp` / selected
+terms) of *why* in each case.
+
+### Cost / what actually ran
+
+| dataset | K | BIR fits | out-of-fold wall-clock | per-fold |
+|---|---|---|---|---|
+| Boston | 5 | 6 | 3.7 s | ~0.6 s |
+| synthetic_large | 5 | 6 | 72.5 s | ~11.7 s |
+| solubility (full) | 3 | 4 | 560.4 s | ~129 s |
+
+All three regression datasets ran at **full size** (solubility with the reduced
+`K = 3` noted above; a single BIR fit on its 228 predictors is ~130 s, so `K = 5`
+would have been ~6 fits ≈ 15 min — `K = 3` keeps it to 4 fits ≈ 9 min and well
+within budget). spam is not evaluated: BIR errors at its distinct-buckets step on
+the 0/1 response, exactly as documented in §3 (expected, not a bug).
+
 ## Files
 
 - `eval_common.R` — shared helpers (split, RMSE, OOS R2, BIR/earth runners, the
-  four-way `run_bir_experts` moe_soft runner, se calibration).
+  four-way `run_bir_experts` moe_soft runner, the out-of-fold `bir_oof_feature`
+  stacking helper, se calibration).
 - `eval_boston.R`, `eval_synthetic.R`, `eval_spam.R`, `eval_solubility.R` —
   per-dataset drivers, each runnable as a separate timed invocation.
+- `eval_stacking.R` — stacking experiment driver (§10): out-of-fold `bir_pred`
+  column fed to the original degree-2 `earth` model, per dataset via
+  `Rscript eval_stacking.R <boston|synthetic|solubility|smoke> [K] [budget_s]`.
