@@ -89,6 +89,16 @@
 #'       transparency.}
 #'   }
 #'
+#' @note \strong{Reproducibility.} The lasso penalty is selected by
+#'   \code{lars::cv.lars}, which draws its cross-validation folds from the
+#'   global random number generator. \code{fit_bir} deliberately does not set an
+#'   internal seed (so it will not silently override a caller's RNG state), so
+#'   the selected \code{lasso_s} — and therefore the predictions — are only
+#'   reproducible if the caller sets a seed before fitting. For repeatable
+#'   results call \code{set.seed()} immediately before \code{fit_bir}; two fits
+#'   run under the same seed give identical \code{lasso_s} and identical
+#'   predictions.
+#'
 #' @seealso \code{\link{predict.bir}}
 #'
 #' @examples

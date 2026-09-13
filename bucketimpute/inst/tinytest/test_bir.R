@@ -58,6 +58,15 @@ expect_equal(predict(fit, x_shuffled, type = "response"), resp)
 ## missing column is an error
 expect_error(predict(fit, x[, c("a", "b")]), "missing required column")
 
+## reproducibility: same caller-set seed -> identical lasso_s and predictions
+set.seed(123)
+fit_a <- fit_bir(x, y, n = 4)
+set.seed(123)
+fit_b <- fit_bir(x, y, n = 4)
+expect_equal(fit_a$lasso_s, fit_b$lasso_s)
+expect_equal(predict(fit_a, x, type = "response"),
+             predict(fit_b, x, type = "response"))
+
 ## (2) near-binary y -> distinct-buckets error --------------------------
 y_bin <- c(rep(0, N / 2), rep(1, N / 2))
 expect_error(fit_bir(x, y_bin, n = 4), "distinct")

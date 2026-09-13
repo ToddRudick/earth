@@ -39,6 +39,12 @@
 #'       (non-negative numeric vector, the predictive scale), and
 #'       \code{affinities} (the affinity matrix).}
 #'   }
+#'   Note on the \code{se} fallback: the predictive scale weights the per-bucket
+#'   variances by each row's affinities normalized to sum to 1. If a row has all
+#'   affinities exactly zero (a fully degenerate row), the normalization would
+#'   divide by zero; in that case the weight sum is forced to 1, so \code{se}
+#'   for that row collapses to the square root of the plain (unweighted) average
+#'   of \code{object$bucket_vars} rather than an affinity-weighted one.
 #'
 #' @seealso \code{\link{fit_bir}}
 #'

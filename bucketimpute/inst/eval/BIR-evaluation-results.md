@@ -91,9 +91,18 @@ X[,8] <- x2 + rnorm(n, 0, 0.25)          # redundant with x2
 |---|---|---|---|---|---|---|
 | Boston (`MASS::Boston`, `medv`) | 354 / 152 | 13 | **5.577** | earth (deg 2) | **3.802** | baseline |
 | synthetic_large | 2800 / 1200 | 40 | **1.532** | earth (deg 2) | **1.057** | baseline |
-| solubility (full, n=10) | 951 / 316 | 228 | **2.076** | earth (deg 2) | 55.13 | BIR (see caveat) |
-| solubility (smoke, 20 preds, n=4) | 951 / 316 | 20 | **1.636** | earth (deg 2) | **1.630** | ~tie |
+| solubility (full, n=10) | 951 / 316 | 228 | **2.076** | earth (deg 2) | 55.13 | BIR (robustness only, see note) |
+| solubility (smoke, 20 preds, n=4) — cost/pipeline probe, not a wide-data verdict | 951 / 316 | 20 (of 228) | **1.636** | earth (deg 2) | **1.630** | ~tie (probe only) |
 | spam (`kernlab`, `type` as 0/1) | 3220 / — | 57 | did not run | earth (deg 2) | — | n/a (expected error) |
+
+> **Reading the "Winner" column.** The solubility (full) "win" is **robustness,
+> not accuracy**: BIR is not better than a working baseline, it is merely
+> bounded while the naive baselines extrapolate catastrophically on this wide,
+> collinear design (degree-2 earth RMSE ~55, a CV-lasso on the raw predictors
+> ~293). See section 6 for the full explanation. The solubility (smoke) row is a
+> **cost/pipeline probe** that subsets to 20 of the 228 predictors with a tiny
+> bucket count; its 1.636-vs-1.630 near-tie is *not* a fair wide-data verdict
+> and should not be read as one.
 
 ## 4. se calibration finding
 
