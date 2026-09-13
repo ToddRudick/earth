@@ -2,7 +2,7 @@
   "id": "FEAT-002",
   "type": "feat",
   "description": "Out-of-sample evaluation of the whole BIR pipeline vs a fair public/state-of-the-art baseline per dataset, plus a rough calibration sanity-check of the predictive se, and a committed markdown results doc. Datasets: Boston (MASS, medv, regression), synthetic_large (reproducible generator defined below), solubility (AppliedPredictiveModeling, WIDE ~951x228), spam (kernlab, binary type as numeric 0/1). Uses the installed bucketimpute package from FEAT-001.",
-  "status": "pending",
+  "status": "in_progress",
   "steps": [
     "Create evaluation scripts under /projects/sandbox/earth/bucketimpute/inst/eval/ (committed). One driver plus per-dataset logic so each dataset can be run as a SEPARATE timed invocation. Set a fixed seed (e.g. set.seed(2024)) for reproducibility.",
     "Define the synthetic_large generator EXACTLY as specified (document it in the script and results doc): seed 2024, n=4000, p=40; x columns ~ runif or rnorm as appropriate; y = 5*x1 + 4*max(x2-0.3,0) + 3*max(0.5-x3,0) + 2.5*x4*x5 + 1.2*x6 + N(0,1); x7 = x1 + N(0,0.25); x8 = x2 + N(0,0.25); remaining columns pure noise. (max(...) applied elementwise, i.e. pmax with 0.)",
@@ -26,5 +26,5 @@
     "Confirm BIR-evaluation-results.md exists and contains a populated RMSE comparison table (not placeholders)."
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "All eval scripts under bucketimpute/inst/eval/ (eval_common.R + per-dataset drivers) plus BIR-evaluation-results.md committed on ImputedValuePredictionTest. All runs OUT-OF-SAMPLE (70/30 split, seed 2024, BIR n=10, baseline plain degree-2 earth). Headline OOS RMSE (BIR vs earth): Boston 5.577 vs 3.802 (BIR LOSES); synthetic_large 1.532 vs 1.057 (BIR LOSES, noise floor sd=1); solubility full n=10 (228 preds) 2.076 vs 55.13 in 124.6s wall-clock -- BIR 'wins' only because naive earth AND naive lasso extrapolate catastrophically on the wide transformed design (BIR affinities are bounded in (0,1] so it stays stable, i.e. robustness not accuracy); solubility smoke (20 preds, n=4) 1.636 vs 1.630 (~tie). spam: DID NOT RUN -- binary 0/1 y triggers the EXPECTED distinct-buckets error from fit_bir (got 2 buckets, need 10); captured via tryCatch and reported as expected, not a bug. se calibration: weakly-but-correctly ordered, Spearman(se,|resid|) Boston +0.472 (monotone 1.9->7.6 by quartile), solubility +0.203, synthetic +0.057 (flat). Solubility full needed a long tool timeout (background processes get reaped between tool calls in this sandbox); it completes in ~125s foreground. Throwaway logs written under .eval_logs then deleted; working tree clean apart from deliverables."
 }
