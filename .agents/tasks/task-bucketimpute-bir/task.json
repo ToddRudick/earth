@@ -1,0 +1,14 @@
+{
+  "task_id": "task-bucketimpute-bir",
+  "task_description": "Implement Bucketed Imputation Regression (BIR) as a CRAN-checkable R sub-package `bucketimpute` inside the earth repo on branch ImputedValuePredictionTest, following bucketed-imputation-regression-spec.md exactly except using the `lars` package (CV-min-MSE lasso) instead of glmnet. Then evaluate the pipeline out-of-sample vs fair baselines on Boston, synthetic_large, solubility, and spam, and commit a markdown results doc. Do not push or open PRs.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null,
+  "verification": {
+    "build": "pass",
+    "tests": "pass",
+    "test_quality": "pass",
+    "docker_build": "skipped",
+    "summary": "R CMD check bucketimpute_0.1.0.tar.gz --no-manual => Status: OK (0 ERRORs, 0 WARNINGs, 0 NOTEs); tinytest suite passes. Tests are meaningful: exercise the real fit/predict pipeline (not mocked), assert spec-required object fields, affinity matrix shape/range, se shape+sign, the column-reordering invariant (shuffled cols give identical predictions), and the distinct-buckets/n<2/missing-column error paths. Evaluation numbers reproduced live: Boston BIR RMSE 5.577 vs earth 3.802 (Spearman se~|resid| 0.472); synthetic_large BIR 1.532 vs earth 1.057. spam correctly hits the expected distinct-buckets error; solubility documented with cost. No Dockerfile relevant for this pure-R sub-package. Build artifacts removed; working tree clean."
+  }
+}
