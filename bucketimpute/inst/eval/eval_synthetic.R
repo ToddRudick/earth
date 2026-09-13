@@ -57,3 +57,9 @@ report_block("synthetic_large", bir_rmse, base_rmse, "earth",
 
 cat(sprintf("\nRESULT_ROW\tsynthetic_large\t%.4f\t%.4f\tearth(deg2)\t%.1f\t%.1f\t%.3f\n",
             bir_rmse, base_rmse, bir$seconds, base$seconds, calib$spearman))
+
+## ---- four-way moe_soft comparison (FEAT-002) ---------------------------
+moe <- run_bir_experts(x_train, y_train, x_test, n = 10)
+if (!moe$ok) stop("BIR(experts) failed on synthetic_large: ", moe$error)
+report_moe_block("synthetic_large", y_test, base$pred, moe$bir_old,
+                 moe$moe_soft, moe$floor, moe$seconds, base$seconds)

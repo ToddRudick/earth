@@ -81,4 +81,22 @@ if (!bir$ok) {
   cat(sprintf("\nRESULT_ROW\tsolubility(%s)\t%.4f\t%.4f\tearth(deg2)\t%.1f\t%.1f\t%.3f\n",
               mode, bir_rmse, base_rmse, bir$seconds, base$seconds,
               calib$spearman))
+
+  ## ---- four-way moe_soft comparison (FEAT-002) -------------------------
+  ## Fit BIR ONCE with experts enabled under the SAME wall-clock budget. The
+  ## experts add n degree-2 earth fits on bucket rows, so honor the budget and
+  ## report DID_NOT_COMPLETE rather than hanging if it is exceeded.
+  cat(sprintf("\n  fitting BIR with experts (budget %.0f s)...\n", budget_s))
+  setTimeLimit(elapsed = budget_s, transient = TRUE)
+  moe <- run_bir_experts(x_train, y_train_full, x_test, n = n_buckets)
+  setTimeLimit(elapsed = Inf)
+  if (!moe$ok) {
+    cat("  BIR(experts) did NOT complete within budget: ", moe$error, "\n",
+        sep = "")
+    cat(sprintf("\nMOE_ROW\tsolubility(%s)\tDID_NOT_COMPLETE\t-\t-\n", mode))
+  } else {
+    report_moe_block(sprintf("solubility(%s)", mode), y_test_full, base$pred,
+                     moe$bir_old, moe$moe_soft, moe$floor, moe$seconds,
+                     base$seconds)
+  }
 }

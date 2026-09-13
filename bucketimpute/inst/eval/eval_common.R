@@ -21,6 +21,20 @@ rmse <- function(actual, predicted) {
   sqrt(mean((as.numeric(actual) - as.numeric(predicted))^2))
 }
 
+## Out-of-sample coefficient of determination:
+##   R2 = 1 - SSE/SST
+## where SSE = sum((actual - predicted)^2) and SST = sum((actual - mean)^2),
+## using the TEST-set mean of `actual` for SST (the standard OOS R2). A model
+## that only predicts the test-set mean scores 0; worse-than-mean scores are
+## negative (which happens when a baseline extrapolates catastrophically).
+r2 <- function(actual, predicted) {
+  actual <- as.numeric(actual)
+  predicted <- as.numeric(predicted)
+  sse <- sum((actual - predicted)^2)
+  sst <- sum((actual - mean(actual))^2)
+  1 - sse / sst
+}
+
 ## 70/30 train/test split of row indices, reproducible given a seed.
 train_test_split <- function(n_rows, prop_train = 0.70, seed = SEED) {
   set.seed(seed)
@@ -95,4 +109,103 @@ report_block <- function(name, bir_rmse, base_rmse, base_name,
     }
   }
   if (!is.null(extra)) cat(extra, "\n")
+}
+
+## ---------------------------------------------------------------------------
+## Four-way soft mixture-of-experts (moe_soft) comparison runner.
+##
+## Fits BIR ONCE on the training split WITH per-bucket experts enabled
+## (fit_bir(..., experts = TRUE)) and, from that SINGLE fitted model, derives
+## three of the four methods on the test split:
+##
+##   (2) old affinity-lasso BIR  = predict(fit, x_test)          [default method]
+##   (3) moe_soft                = predict(fit, x_test, method = "moe_soft")
+##   (4) bucket-mean FLOOR       = affinity-weighted per-bucket MEAN of the
+##                                 TRAINING y, using the IDENTICAL normalized
+##                                 affinity gate as moe_soft.
+##
+## The FLOOR isolates whether the per-bucket REGRESSION (the earth experts)
+## adds value over merely blending bucket means under the same gate.
+##
+## How the floor reuses the identical affinity gate: moe_soft computes, for
+## each test row, weights w_k = a_k / sum_j a_j from the affinity matrix
+## returned by predict(fit, ., type = "affinity"), forcing an all-zero row to
+## a uniform 1/n vector first (the .bir_moe_predict all-zero guard). The floor
+## recomputes weights from THAT SAME affinity matrix with THAT SAME guard and
+## normalization, then takes yhat_floor = sum_k w_k * mean(y_train in bucket k).
+## moe_soft is yhat_moe = sum_k w_k * expert_k(x). The weights are therefore
+## byte-identical between the two; the ONLY difference is the per-bucket value
+## blended (fitted earth expert vs. constant bucket mean), so the moe_soft-minus
+## -floor difference is attributable purely to the per-bucket regression.
+##
+## Method (1), plain degree-2 earth, is fit separately via run_earth().
+##
+## Returns a list with ok/error plus, on success, per-method prediction vectors
+## (bir_old, moe_soft, floor), the fitted model, and timing. run_bir (old
+## behaviour, no experts) is left intact for back-compat and other callers.
+run_bir_experts <- function(x_train, y_train, x_test, n = 10, ...) {
+  set.seed(SEED)
+  t0 <- proc.time()[["elapsed"]]
+  fit <- tryCatch(
+    fit_bir(x_train, y_train, n = n, experts = TRUE, ...),
+    error = function(e) e
+  )
+  if (inherits(fit, "error")) {
+    return(list(ok = FALSE, error = conditionMessage(fit),
+                seconds = proc.time()[["elapsed"]] - t0))
+  }
+
+  ## (2) old affinity-lasso BIR (default method), plus se via type = "all"
+  pr_old <- predict(fit, x_test, type = "all")
+  ## (3) moe_soft blend of the per-bucket earth experts
+  pred_moe <- as.numeric(predict(fit, x_test, method = "moe_soft"))
+
+  ## (4) bucket-mean floor: reuse the SAME affinity matrix and the SAME
+  ## normalization/guard as moe_soft, but blend per-bucket TRAINING means.
+  affin <- pr_old$affinities                 # identical to moe_soft's gate input
+  zero_rows <- rowSums(affin) == 0
+  if (any(zero_rows)) affin[zero_rows, ] <- 1   # .bir_moe_predict all-zero guard
+  weights <- affin / rowSums(affin)
+  ## per-bucket TRAINING means, using the model's own equal-frequency cuts so
+  ## the bucket assignment matches fit_bir exactly.
+  bucket_tr <- findInterval(as.numeric(y_train), fit$cuts,
+                            rightmost.closed = TRUE, all.inside = TRUE)
+  bucket_means <- vapply(seq_len(n), function(k) mean(y_train[bucket_tr == k]),
+                         numeric(1))
+  pred_floor <- as.numeric(weights %*% bucket_means)
+
+  list(ok = TRUE,
+       bir_old  = as.numeric(pr_old$fit),
+       moe_soft = pred_moe,
+       floor    = pred_floor,
+       se = pr_old$se, affinities = pr_old$affinities,
+       model = fit, seconds = proc.time()[["elapsed"]] - t0)
+}
+
+## Pretty-print the four-way OOS-R2 + RMSE comparison for one dataset and emit
+## machine-readable RESULT rows. `preds` is a named list of prediction vectors
+## keyed by method label; order is preserved for the printed block.
+report_moe_block <- function(name, y_test, earth_pred, bir_old, moe_soft,
+                             floor, seconds_bir = NA, seconds_earth = NA) {
+  methods <- list(
+    "earth(deg2)"        = earth_pred,
+    "affinity_lasso(old)" = bir_old,
+    "moe_soft"           = moe_soft,
+    "bucket_mean_floor"  = floor
+  )
+  cat(sprintf("\n===== %s : four-way OOS comparison =====\n", name))
+  cat(sprintf("  %-22s %10s %10s\n", "method", "OOS-R2", "RMSE"))
+  for (m in names(methods)) {
+    p <- methods[[m]]
+    cat(sprintf("  %-22s %10.4f %10.4f\n", m, r2(y_test, p), rmse(y_test, p)))
+  }
+  if (!is.na(seconds_bir))
+    cat(sprintf("  BIR(experts) wall-clock: %.1f s\n", seconds_bir))
+  if (!is.na(seconds_earth))
+    cat(sprintf("  earth wall-clock       : %.1f s\n", seconds_earth))
+  for (m in names(methods)) {
+    p <- methods[[m]]
+    cat(sprintf("MOE_ROW\t%s\t%s\t%.4f\t%.4f\n",
+                name, m, r2(y_test, p), rmse(y_test, p)))
+  }
 }

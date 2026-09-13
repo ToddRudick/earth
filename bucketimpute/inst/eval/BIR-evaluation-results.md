@@ -184,8 +184,135 @@ MARS because it fits `n * p` earth models per fit, which makes wide data costly.
 The method is most defensible as a *bounded, uncertainty-aware* regressor for
 ill-scaled wide data, not as a general-purpose accuracy improvement over MARS.
 
+## 7. Soft mixture-of-experts (moe_soft): four-way OOS comparison
+
+This section augments (does not replace) the results above. It evaluates the
+optional `moe_soft` prediction mode added to `bucketimpute` and answers three
+questions per dataset:
+
+- **(a)** Does `moe_soft` beat the old affinity-lasso BIR (the default method)?
+- **(b)** Does it beat, or close the gap to, plain degree-2 earth?
+- **(c)** Does it beat the affinity-weighted **bucket-mean floor** — i.e. is the
+  per-bucket *regression* pulling its weight, or is the affinity gate doing all
+  the work?
+
+### Methods compared
+
+1. **earth(deg2)** — plain degree-2 `earth` (MARS), the existing baseline
+   (`run_earth`).
+2. **affinity_lasso(old)** — the original BIR prediction,
+   `predict(fit, x_test)` (default `method = "affinity_lasso"`).
+3. **moe_soft** — `predict(fit, x_test, method = "moe_soft")`: the
+   affinity-weighted blend of the per-bucket degree-2 earth experts,
+   `yhat = sum_k w_k(x) * expert_k(x)`.
+4. **bucket_mean_floor** — the affinity-weighted per-bucket **mean** of the
+   *training* `y`, using the **identical** normalized affinity gate as
+   `moe_soft`.
+
+**Single-fit protocol.** For each dataset BIR is fit **once** with
+`fit_bir(..., experts = TRUE)` (seed 2024, 70/30 split, `n = 10`), and methods
+(2), (3) and (4) are all read off that one fitted model on the test split
+(`run_bir_experts()` in `eval_common.R`). Because the fit and the
+default-method prediction are produced under the same `set.seed(2024)` as the
+no-experts `run_bir`, the `affinity_lasso(old)` numbers here are byte-for-byte
+identical to section 3 (e.g. Boston 5.5766, synthetic_large 1.5321,
+solubility-full 2.0764).
+
+**How the floor reuses the identical gate.** `moe_soft` forms per-row weights
+`w_k = a_k / sum_j a_j` from the affinity matrix (`predict(., type = "affinity")`),
+forcing an all-zero-affinity row to a uniform `1/n` vector first (the
+`.bir_moe_predict` all-zero guard). The floor recomputes weights from *that
+same* affinity matrix with *that same* guard and normalization, then blends the
+per-bucket training means `mbar_k = mean(y_train in bucket k)` (bucketing via
+the model's own `fit$cuts`), giving `yhat_floor = sum_k w_k * mbar_k`. The
+weights are therefore byte-identical to `moe_soft`; the **only** difference is
+the per-bucket value blended (fitted earth expert vs. constant bucket mean). So
+`moe_soft - floor` isolates exactly the contribution of the per-bucket
+regression.
+
+### OOS-R2 and RMSE (real measured numbers, seed 2024)
+
+`R2 = 1 - SSE/SST` on the test set, using the test-set mean for SST. Higher R2
+is better; lower RMSE is better.
+
+| Dataset | Metric | earth(deg2) | affinity_lasso(old) | moe_soft | bucket_mean_floor |
+|---|---|---|---|---|---|
+| Boston (medv) | OOS-R2 | **0.8015** | 0.5730 | 0.5417 | 0.5061 |
+| Boston (medv) | RMSE | **3.8020** | 5.5766 | 5.7777 | 5.9981 |
+| synthetic_large | OOS-R2 | **0.7476** | 0.4697 | 0.1469 | 0.0698 |
+| synthetic_large | RMSE | **1.0570** | 1.5321 | 1.9432 | 2.0291 |
+| solubility (full, n=10, 228 preds) | OOS-R2 | -704.7335 | -0.0012 | **0.1444** | **0.1444** |
+| solubility (full, n=10, 228 preds) | RMSE | 55.1285 | 2.0764 | **1.9195** | **1.9195** |
+| solubility (smoke, 20 preds, n=4) — probe only | OOS-R2 | **0.3831** | 0.3789 | 0.2300 | 0.1760 |
+| solubility (smoke, 20 preds, n=4) — probe only | RMSE | **1.6299** | 1.6355 | 1.8209 | 1.8837 |
+| spam (`type` as 0/1) | — | did not run — expected distinct-buckets error (see below) | | | |
+
+Wall-clock (BIR fit with experts + all three derived predictions): Boston
+~0.6 s, synthetic_large ~6.8 s, solubility-smoke ~0.7 s, solubility-full
+~127 s (vs ~120 s for the no-experts fit; the `n` extra degree-2 earth experts
+add little here because on the wide design every expert falls back to a
+constant — see below). Run under a hard `timeout` and in-R `setTimeLimit`.
+
+### Per-dataset verdicts
+
+- **Boston — moe_soft does NOT help.** (a) It is slightly *worse* than the old
+  affinity-lasso BIR (R2 0.5417 vs 0.5730; RMSE 5.78 vs 5.58). (b) It gets
+  nowhere near plain earth (R2 0.80). (c) It *does* beat the bucket-mean floor
+  (0.5417 vs 0.5061), so the per-bucket regression adds a little over blending
+  bucket means — but not enough to overtake the old lasso gate, which remains
+  the best BIR variant here.
+- **synthetic_large — moe_soft does NOT help; it is the worst BIR variant.**
+  (a) Clearly worse than the old affinity-lasso BIR (R2 0.147 vs 0.470). (b)
+  Far below plain earth (R2 0.748), which recovers the hinge/interaction
+  structure near the noise floor. (c) It beats the bucket-mean floor only
+  narrowly (0.147 vs 0.070), so the per-bucket regression buys a little, but the
+  whole soft-blend approach discards most of the structured signal that both the
+  old lasso and earth capture. A clean loss.
+- **solubility (full, WIDE) — moe_soft helps vs the broken baselines and vs the
+  old BIR, but the per-bucket regression contributes NOTHING.** (a) It beats the
+  old affinity-lasso BIR (R2 0.1444 vs -0.0012; RMSE 1.92 vs 2.08). (b) It
+  trivially beats plain earth, which extrapolates catastrophically on this
+  collinear 228-column design (R2 -704, RMSE 55) — this is baseline breakage,
+  not moe_soft excellence. (c) **moe_soft and the bucket-mean floor are
+  identical to 4 decimals (0.1444 / 1.9195).** With 228 predictors and ~66-95
+  rows per bucket, every bucket falls below the expert threshold
+  (`expert_min_rows = 2*p = 456`), so *every* per-bucket earth expert falls back
+  to its constant bucket mean. On wide data `moe_soft` therefore *is* the
+  bucket-mean floor: the affinity gate is doing 100% of the work and the
+  per-bucket regression pulls zero weight.
+- **solubility (smoke, 20 preds, n=4) — probe only; moe_soft does NOT help.**
+  (a) Worse than the old BIR (R2 0.230 vs 0.379). (b) Below plain earth (0.383).
+  (c) It does beat the bucket-mean floor (0.230 vs 0.176), so here — where the
+  bucket rows are large enough for real experts — the per-bucket regression does
+  add value over bucket means, though still not enough to match the old lasso
+  gate. This is a cost/pipeline probe on 20 of 228 predictors, not a wide-data
+  verdict.
+- **spam — did not run (expected).** `type` encoded as numeric 0/1 has only two
+  distinct values, so equal-frequency quantile bucketing at `n >= 2` cannot form
+  `n` distinct non-empty buckets; `fit_bir` raises its distinct-buckets error by
+  design. **Enabling experts does not change this**: the error is raised at the
+  bucketing step, before any expert would be fit. Reported as an expected,
+  reportable outcome, not a bug.
+
+### moe_soft overall
+
+Across every dataset with a fair, working baseline (Boston, synthetic_large,
+solubility-smoke), **`moe_soft` does not beat the old affinity-lasso BIR and
+does not close the gap to plain degree-2 earth** — it is consistently the weaker
+BIR variant. Its only "win" is on solubility-full, where it edges past the old
+BIR *and* the broken baselines, but there it is provably identical to the
+bucket-mean floor because the wide design forces every expert to its constant
+fallback, so the affinity gate — not the per-bucket regression — is doing all
+the work. Where buckets are wide enough for genuine experts (Boston,
+solubility-smoke, and marginally synthetic_large), the per-bucket regression
+*does* beat the bucket-mean floor, confirming the experts carry some signal, but
+never enough to overtake the existing lasso gate. Net: `moe_soft` is a correct,
+cleanly optional addition that is most useful as a robustness/diagnostic mode,
+not a general accuracy improvement over the default BIR or over MARS.
+
 ## Files
 
-- `eval_common.R` — shared helpers (split, RMSE, BIR/earth runners, se calibration).
+- `eval_common.R` — shared helpers (split, RMSE, OOS R2, BIR/earth runners, the
+  four-way `run_bir_experts` moe_soft runner, se calibration).
 - `eval_boston.R`, `eval_synthetic.R`, `eval_spam.R`, `eval_solubility.R` —
   per-dataset drivers, each runnable as a separate timed invocation.

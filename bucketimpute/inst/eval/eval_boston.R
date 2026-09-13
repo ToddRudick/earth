@@ -39,3 +39,11 @@ report_block("Boston (medv)", bir_rmse, base_rmse, "earth",
 
 cat(sprintf("\nRESULT_ROW\tBoston\t%.4f\t%.4f\tearth(deg2)\t%.1f\t%.1f\t%.3f\n",
             bir_rmse, base_rmse, bir$seconds, base$seconds, calib$spearman))
+
+## ---- four-way moe_soft comparison (FEAT-002) ---------------------------
+## Fit BIR ONCE with experts enabled and derive the old affinity-lasso BIR,
+## moe_soft, and the affinity-weighted bucket-mean floor from that one model.
+moe <- run_bir_experts(x_train, y_train, x_test, n = 10)
+if (!moe$ok) stop("BIR(experts) failed on Boston: ", moe$error)
+report_moe_block("Boston", y_test, base$pred, moe$bir_old, moe$moe_soft,
+                 moe$floor, moe$seconds, base$seconds)
