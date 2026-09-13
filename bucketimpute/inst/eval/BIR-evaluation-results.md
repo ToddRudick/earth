@@ -491,6 +491,154 @@ the small smoke probe it is slightly worse. It never beats plain degree-2
 models are also markedly simpler in form (linear + pairwise interactions, no
 hinges, ~4 terms vs ~15) at a modestly higher fit cost.
 
+## 9. Imputation-model ablation: degree=1 linear main effects only
+
+This section augments (does not replace) the sections above. It ablates the
+imputation-model **degree** to isolate how much the degree-2 pairwise
+interactions of section 8 were actually contributing. The per-bucket per-column
+imputation models are now fit as
+
+```r
+earth(x = xj_pred, y = yj, degree = 1, linpreds = TRUE, thresh = 1e-6)
+```
+
+i.e. **linear main effects only** — no hinges and no interactions. Everything
+else in the pipeline (bucketing, affinity construction, the lars CV-lasso, the
+degree-2 `moe_soft` experts, the final lasso) is unchanged, and the
+caller-override-via-`...` behaviour is preserved. This is the only change vs
+section 8.
+
+### Three-way comparison of imputation-model families
+
+The default `affinity_lasso` BIR path, `set.seed(2024)`, 70/30 holdout,
+`n = 10`. Three imputation-model families are compared:
+
+- **(A) degree-1 hinge** — the first version, `earth(..., degree = 1)` with
+  hinge functions (no `linpreds`). Numbers from sections 3/7.
+- **(B) degree-2 linpreds+thresh=1e-6** — the section-8 committed version:
+  linear main effects **plus pairwise interactions**, no hinges.
+- **(C) degree-1 linpreds+thresh=1e-6** — this ablation: linear main effects
+  **only**, no hinges and no interactions. Freshly measured.
+
+Higher OOS-R2 / lower RMSE is better.
+
+| Dataset | A deg-1 hinge R2 | B deg-2 linpreds R2 | C deg-1 linpreds R2 | A RMSE | B RMSE | C RMSE |
+|---|---|---|---|---|---|---|
+| Boston (`medv`) | 0.5730 | 0.6233 | **0.6385** | 5.5766 | 5.2382 | **5.1313** |
+| synthetic_large | 0.4697 | **0.5524** | 0.5500 | 1.5321 | **1.4076** | 1.4113 |
+| solubility (full, n=10, 228 preds) | -0.0012 | -0.0017 | -0.0103 | 2.0764 | 2.0770 | 2.0858 |
+| spam (`type` as 0/1) | did not run | did not run | did not run | — | — | — |
+
+Baseline `earth(deg2)` is unaffected by the imputation change (Boston RMSE
+3.8020 / R2 0.8015; synthetic_large RMSE 1.0570 / R2 0.7476; solubility-full
+RMSE 55.13), so it still beats BIR on the two clean regression benchmarks; the
+imputation-model family only moves BIR within its own (robust but less accurate)
+regime.
+
+**spam** still raises the expected distinct-buckets error at bucketing (binary
+`type` as 0/1 gives 2 distinct buckets, `n = 10` needed) before any imputation
+model is fit — expected, not a bug, and unchanged by the degree.
+
+### Verdict: did degree-1 (C) help/hurt/neutral vs the degree-2 (B) it replaces?
+
+- **Boston — slightly helped.** OOS-R2 rose 0.6233 (B) -> **0.6385** (C), RMSE
+  5.2382 -> **5.1313**. Dropping the pairwise interactions from the imputation
+  models made the affinity gate marginally *more* discriminative here.
+- **synthetic_large — essentially neutral (a hair worse).** OOS-R2 0.5524 (B)
+  -> 0.5500 (C), RMSE 1.4076 -> 1.4113. The generator's only predictor-side
+  interaction structure that the imputation could exploit is mild
+  (`x7 ≈ x1`, `x8 ≈ x2` are linear redundancies, well captured by main effects);
+  removing interactions costs almost nothing.
+- **solubility (full) — neutral (both ≈ 0).** OOS-R2 -0.0017 (B) -> -0.0103
+  (C), RMSE ~2.08 either way. BIR stays bounded/robust while naive earth blows
+  up (RMSE 55); the imputation degree is a wash on this wide design.
+
+**Overall:** replacing the degree-2 linpreds imputation with degree-1 linpreds
+(main effects only) is **neutral-to-slightly-positive** on the default BIR path:
+Boston improves a little, synthetic_large and solubility are effectively
+unchanged. The pairwise interactions the degree-2 models were adding (present in
+~122/130 Boston models) contributed **little to no** OOS value to the downstream
+affinity-lasso; the simpler linear imputation matches or slightly beats them.
+BIR still never beats plain degree-2 `earth` on the clean benchmarks.
+
+### Example new degree-1 imputation models (Boston, seed 2024, 70/30 train, n=10)
+
+Survey across all `n * p = 10 * 13 = 130` imputation models of the Boston
+training split, using `earth`'s `format(model)`:
+
+- **Mean #terms per model:** 3.32 (median 3, min 1, max 8).
+- **Intercept-only models:** 8 of 130 (**6.2%**).
+- **Models containing a hinge `h(...)`:** **0 of 130 (0.0%)**.
+- **Models containing an interaction (a `var1*var2` product):**
+  **0 of 130 (0.0%)** — confirming the models are now linear main effects only.
+- **#terms distribution:**
+
+  | #terms | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+  |---|---|---|---|---|---|---|---|---|
+  | count | 8 | 28 | 34 | 41 | 15 | 2 | 1 | 1 |
+
+**Before/after of the survey.** The section-8 degree-2 version had **0 hinges**
+but pairwise **interactions in ~122/130** Boston models (mean ~4.14 terms). The
+new degree-1 version has **0 hinges AND 0 interactions** (mean 3.32 terms) —
+every non-intercept term is a plain linear main effect. (Grepping the
+`format(model)` strings: `h(` count 0; `var1*var2` interaction count 0. Note
+`earth`'s linear-term display writes `coef * var` with spaces around the `*`,
+which is a coefficient multiply, not an interaction; interaction terms print as
+`var1*var2` with no surrounding spaces, of which there are none.)
+
+Concrete example formulas (bucket `k`, reconstructed column, via
+`format(model)`):
+
+```
+[bucket k=1] predict column 'crim' from the other 12 columns:
+  52.34339
+  - 19.9989 * dis
+
+[bucket k=3] predict column 'nox' from the other 12 columns:
+  0.9966215
+  + 0.09734213 * chas
+  + 0.04481016 * rm
+  - 0.04930201 * dis
+  -  0.0256217 * ptratio
+
+[bucket k=5] predict column 'dis' from the other 12 columns:
+  8.924514
+  + 0.05575416 * zn
+  -   6.844734 * nox
+  - 0.02510418 * age
+
+[bucket k=7] predict column 'indus' from the other 12 columns:
+  2.14712
+  -  0.1104059 * zn
+  + 0.02562182 * tax
+
+[bucket k=9] predict column 'lstat' from the other 12 columns:
+  -3.551605
+  + 20.7148 * nox
+
+[bucket k=10] predict column 'rm' from the other 12 columns:
+  7.976122
+  - 0.07061408 * rad
+```
+
+Every term is either an intercept or a linear main effect (e.g.
+`20.7148 * nox`); there are no `h(...)` hinge functions and no `var1*var2`
+interaction products.
+
+### Wall-clock cost (degree-1 imputation)
+
+| Dataset / run | BIR fit+predict | Notes |
+|---|---|---|
+| Boston | 0.6 s | 130 imputation models |
+| synthetic_large | 14.3 s | 400 imputation models; faster than the degree-2 ~19.1 s (no interaction candidates to evaluate) |
+| solubility full (228 preds, n=10) | 169.5 s | ~2280 imputation models; completed under a 1500 s in-R `setTimeLimit` budget and a hard bash `timeout` |
+
+The degree-1 imputation is somewhat cheaper per fit than degree-2 on the
+low-dimensional benchmarks (synthetic_large ~14 s vs ~19 s) because the forward
+pass has no interaction candidates to consider. Solubility-full still completes
+foreground in ~170 s. No dataset was reduced or dropped for cost; all ran at
+full size except spam (expected error).
+
 ## Files
 
 - `eval_common.R` — shared helpers (split, RMSE, OOS R2, BIR/earth runners, the

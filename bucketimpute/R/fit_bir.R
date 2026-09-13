@@ -2,7 +2,7 @@
 #'
 #' \code{fit_bir} implements Bucketed Imputation Regression exactly as described
 #' in the package specification. The response \code{y} is split into \code{n}
-#' equal-frequency quantile buckets; within each bucket a linear, degree-2
+#' equal-frequency quantile buckets; within each bucket a linear, degree-1
 #' \code{\link[earth]{earth}} (MARS) \emph{imputation} model is fit for every
 #' predictor column (reconstructing that column from all of the other
 #' predictors); per-bucket standardized absolute reconstruction errors are
@@ -10,14 +10,15 @@
 #' \code{y} on those affinity features is fit.
 #'
 #' The per-bucket, per-column imputation models are fit with
-#' \code{earth(x_j_pred, y_j, degree = 2, linpreds = TRUE, thresh = 1e-6)}:
+#' \code{earth(x_j_pred, y_j, degree = 1, linpreds = TRUE, thresh = 1e-6)}:
 #' \code{linpreds = TRUE} makes every predictor enter \strong{linearly} (no
-#' hinge functions), \code{degree = 2} allows pairwise interaction terms, and
-#' \code{thresh = 1e-6} sets earth's forward-pass delta-GRSq stopping threshold
-#' very small so the forward pass keeps adding terms until almost no
-#' improvement remains. The result is a model of linear main effects plus
-#' pairwise interactions with no hinges. (This replaces the earlier degree-1
-#' hinge imputation models.) Any of \code{degree}, \code{linpreds}, or
+#' hinge functions), \code{degree = 1} restricts the model to additive main
+#' effects (no interaction terms), and \code{thresh = 1e-6} sets earth's
+#' forward-pass delta-GRSq stopping threshold very small so the forward pass
+#' keeps adding terms until almost no improvement remains. The result is a
+#' model of linear main effects only, with no hinges and no interactions. (This
+#' ablates the earlier degree-2 imputation models, which additionally allowed
+#' pairwise interactions.) Any of \code{degree}, \code{linpreds}, or
 #' \code{thresh} supplied through \code{...} overrides these fixed defaults.
 #'
 #' @section Algorithm:
@@ -33,8 +34,8 @@
 #'     the distinct-buckets problem rather than silently merging buckets.
 #'   \item \strong{Per-bucket earth imputation models.} For each bucket \code{k}
 #'     and each column \code{j}, fit \code{earth(x_k[, -j], x_k[, j],
-#'     degree = 2, linpreds = TRUE, thresh = 1e-6, ...)} (linear main effects
-#'     plus pairwise interactions, no hinges) and record the residual scale
+#'     degree = 1, linpreds = TRUE, thresh = 1e-6, ...)} (linear main effects
+#'     only, no hinges and no interactions) and record the residual scale
 #'     \code{s_{k,j} = sqrt(mean(residuals^2))}. Each scale is floored at
 #'     \code{scale_floor} to avoid divide-by-zero when a bucket's fit is
 #'     essentially intercept-only. Column names and order are preserved so that
@@ -104,11 +105,11 @@
 #'   expected.
 #' @param ... Extra arguments passed through to \code{\link[earth]{earth}} for
 #'   the per-bucket, per-column imputation fits (not the experts). The
-#'   imputation fits use fixed defaults \code{degree = 2},
-#'   \code{linpreds = TRUE}, and \code{thresh = 1e-6} (linear main effects plus
-#'   pairwise interactions, no hinges); passing any of these through \code{...}
-#'   overrides the corresponding default, and every other argument is forwarded
-#'   to earth() unchanged.
+#'   imputation fits use fixed defaults \code{degree = 1},
+#'   \code{linpreds = TRUE}, and \code{thresh = 1e-6} (linear main effects
+#'   only, no hinges and no interactions); passing any of these through
+#'   \code{...} overrides the corresponding default, and every other argument
+#'   is forwarded to earth() unchanged.
 #'
 #' @return An S3 object of class \code{"bir"}: a list containing
 #'   \describe{
@@ -272,7 +273,7 @@ fit_bir <- function(x, y, n = 10, min_bucket_rows = NULL,
 
   ## ---- 2. per-bucket earth models ---------------------------------------
   ## Capture `...` once so it can be merged with the fixed imputation-model
-  ## settings (degree = 2, linpreds = TRUE, thresh = 1e-6). Caller-supplied
+  ## settings (degree = 1, linpreds = TRUE, thresh = 1e-6). Caller-supplied
   ## arguments in `...` win over these defaults; see .bir_impute_earth_args().
   imp_dots <- list(...)
   models <- vector("list", n)
@@ -364,15 +365,15 @@ fit_bir <- function(x, y, n = 10, min_bucket_rows = NULL,
 ## Internal helper: assemble the argument list for a per-bucket, per-column
 ## imputation earth() fit. The imputation models are fixed to be linear
 ## (linpreds = TRUE, so predictors enter linearly with no hinge functions),
-## degree = 2 (allowing pairwise interaction terms), and thresh = 1e-6 (a very
-## small forward-pass delta-GRSq stopping threshold, so the forward pass keeps
-## adding terms until almost no improvement remains). These are the intended
-## imputation-model settings for this package. Any of `degree`, `linpreds`, or
-## `thresh` supplied by the caller through `...` (`dots`) overrides the
-## corresponding fixed default; all other `...` arguments are forwarded to
-## earth() unchanged, preserving the passthrough.
+## degree = 1 (main effects only, no interaction terms), and thresh = 1e-6 (a
+## very small forward-pass delta-GRSq stopping threshold, so the forward pass
+## keeps adding terms until almost no improvement remains). These are the
+## intended imputation-model settings for this package. Any of `degree`,
+## `linpreds`, or `thresh` supplied by the caller through `...` (`dots`)
+## overrides the corresponding fixed default; all other `...` arguments are
+## forwarded to earth() unchanged, preserving the passthrough.
 .bir_impute_earth_args <- function(x, y, dots) {
-  defaults <- list(degree = 2, linpreds = TRUE, thresh = 1e-6)
+  defaults <- list(degree = 1, linpreds = TRUE, thresh = 1e-6)
   ## caller-supplied dots win over the fixed imputation defaults
   merged <- utils::modifyList(defaults, dots)
   c(list(x = x, y = y), merged)
