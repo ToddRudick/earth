@@ -726,12 +726,32 @@ each fit is independently reproducible.
 Outer protocol is the harness standard: 70/30 outer holdout, `n = 10` BIR
 buckets (4 for the solubility smoke), degree-2 `earth`. `K = 5` for the cheap
 datasets; **`K = 3` for solubility-full** to keep it within the cost budget (see
-below). The out-of-fold scheme fits BIR `K + 1` times per dataset. All numbers
-in this section were verified to reproduce byte-for-byte across two independent
-fresh `Rscript eval_stacking.R <dataset>` sessions on a clean `R CMD INSTALL` of
-the current `bucketimpute` source (seed 2024, R 4.5.3, lars 1.3), and to be
-invariant to a deliberately adversarial ambient `RNGkind(..., "Rounding")` set
-before the run.
+below). The out-of-fold scheme fits BIR `K + 1` times per dataset.
+
+> **UNRESOLVED REPRODUCIBILITY CAVEAT (read before trusting the exact
+> magnitudes).** The *exact* stacked-earth magnitude on Boston is **not stable
+> across environments**, and this was not fully resolved. Independent clean
+> `R CMD INSTALL` runs of the current source (same commit, same seed 2024, same
+> R 4.5.3 / lars 1.3) have produced **two different stable results** depending
+> on the environment:
+>
+> - stacked R2 **0.8692** (Δ +0.068, `bir_pred` in 2 terms) in one environment, and
+> - stacked R2 **0.8243** (Δ +0.023, BIR-alone reported as 0.5730, `bir_pred` in
+>   4 terms) in another,
+>
+> each reproducible *within* its environment but not *between* them. The `bir_seed()`
+> RNG pin (below) narrowed but did **not** eliminate the divergence. The most likely
+> remaining cause is that `lars::cv.lars` draws its CV folds from the global RNG in a
+> way still sensitive to some environment/state difference the pin does not capture.
+> **What is robust regardless of environment:** plain earth = 0.8015; stacking the
+> out-of-fold `bir_pred` **improves** Boston (to somewhere in ~0.824–0.869); MARS
+> **does select** `bir_pred` (2–4 terms); synthetic_large and solubility are
+> neutral with the term dropped. Treat the Boston stacked number as
+> "**a real but environment-sensitive gain of roughly +0.02 to +0.07 R2**", not a
+> single canonical figure.
+
+The canonical protocol below fixes the RNG kind and row order to reduce (but, per
+the caveat above, not fully eliminate) cross-environment variation.
 
 Reproduce (each dataset a separate timed invocation):
 
@@ -746,7 +766,7 @@ timeout  180 Rscript bucketimpute/inst/eval/eval_stacking.R smoke
 
 | dataset | (a) plain earth `[x]` R2 / RMSE | (b) stacked earth `[x‖bir_pred]` R2 / RMSE | (c) BIR alone R2 / RMSE | Δ R2 (b − a) | `bir_pred` selected by MARS? |
 |---|---|---|---|---|---|
-| Boston | 0.8015 / 3.802 | **0.8692 / 3.087** | 0.6385 / 5.131 | **+0.0676** | **yes** (2 terms; evimp rank 7 of 11 used) |
+| Boston | 0.8015 / 3.802 | **0.824–0.869 / 3.09–3.58** (env-sensitive, see caveat) | 0.639 / 5.13 (0.573 in the other env) | **+0.02 to +0.07** | **yes** (2–4 terms; mid-table evimp) |
 | synthetic_large | 0.7476 / 1.057 | 0.7427 / 1.067 | 0.5500 / 1.411 | −0.0048 | no (0 terms) |
 | solubility (full) | −704.73 / 55.13 | −704.73 / 55.13 | −0.0103 / 2.086 | +0.0000 | no (0 terms) |
 | spam | — | — | — | — | expected BIR failure (distinct-buckets, see §3) |
@@ -758,11 +778,14 @@ contributor, not the dominant term.
 
 ### Verdicts (honest, including the null results)
 
-- **Boston: a real, moderate win.** Adding the out-of-fold `bir_pred` column
-  lifts the original earth model from OOS-R2 0.8015 to 0.8692 (RMSE 3.80 → 3.09).
-  MARS actively selected `bir_pred` into 2 of its terms, and `evimp` ranks it a
-  meaningful mid-table variable. Here BIR's affinity structure carries signal the
-  raw predictors did not already expose to a degree-2 MARS.
+- **Boston: a real (if environment-sensitive) win.** Adding the out-of-fold
+  `bir_pred` column lifts the original earth model from OOS-R2 0.8015 to
+  somewhere in **~0.824–0.869** (RMSE 3.80 → 3.1–3.6) — the direction and the
+  fact of improvement are robust across environments; the exact size is not (see
+  the reproducibility caveat above). In every run MARS actively selected
+  `bir_pred` (2–4 terms) with mid-table `evimp` importance, so BIR's affinity
+  structure carries signal the raw predictors did not already expose to a
+  degree-2 MARS. Treat the gain as "modest and real, magnitude uncertain".
 
 - **synthetic_large: no benefit; MARS ignores the term.** The stacked model is a
   hair *worse* (−0.0048 R2) and MARS did **not** select `bir_pred` into any term
