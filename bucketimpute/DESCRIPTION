@@ -1,0 +1,24 @@
+Package: bucketimpute
+Type: Package
+Title: Bucketed Imputation Regression (BIR)
+Version: 0.1.0
+Authors@R: person("BIR", "Author", email = "bir@example.com", role = c("aut", "cre"))
+Description: Bucketed Imputation Regression (BIR) is a regression method that
+    divides the continuous response into equal-frequency quantile buckets,
+    fits per-bucket degree-1 'earth' (MARS) models that reconstruct each
+    predictor from the others, converts per-bucket standardized reconstruction
+    error into affinity features, and fits a cross-validated lasso of the
+    response on those affinities. Predictions return a point estimate plus a
+    simple affinity-weighted heteroscedastic scale. This implementation uses
+    the 'lars' package for the cross-validated lasso (selecting the penalty at
+    minimum cross-validated MSE) instead of 'glmnet'; see the function
+    documentation for details of this deliberate substitution.
+License: GPL-3
+Encoding: UTF-8
+Imports:
+    earth,
+    lars,
+    stats
+Suggests:
+    tinytest
+Config/roxygen2/version: 8.1.0

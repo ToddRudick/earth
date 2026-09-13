@@ -1,0 +1,7 @@
+{
+  "task_id": "task-bucketimpute-bir",
+  "task_description": "Implement Bucketed Imputation Regression (BIR) as a CRAN-checkable R sub-package `bucketimpute` inside the earth repo on branch ImputedValuePredictionTest, following bucketed-imputation-regression-spec.md exactly except using the `lars` package (CV-min-MSE lasso) instead of glmnet. Then evaluate the pipeline out-of-sample vs fair baselines on Boston, synthetic_large, solubility, and spam, and commit a markdown results doc. Do not push or open PRs.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}

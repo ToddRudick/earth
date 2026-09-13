@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Out-of-sample evaluation of the whole BIR pipeline vs a fair public/state-of-the-art baseline per dataset, plus a rough calibration sanity-check of the predictive se, and a committed markdown results doc. Datasets: Boston (MASS, medv, regression), synthetic_large (reproducible generator defined below), solubility (AppliedPredictiveModeling, WIDE ~951x228), spam (kernlab, binary type as numeric 0/1). Uses the installed bucketimpute package from FEAT-001.",
+  "status": "pending",
+  "steps": [
+    "Create evaluation scripts under /projects/sandbox/earth/bucketimpute/inst/eval/ (committed). One driver plus per-dataset logic so each dataset can be run as a SEPARATE timed invocation. Set a fixed seed (e.g. set.seed(2024)) for reproducibility.",
+    "Define the synthetic_large generator EXACTLY as specified (document it in the script and results doc): seed 2024, n=4000, p=40; x columns ~ runif or rnorm as appropriate; y = 5*x1 + 4*max(x2-0.3,0) + 3*max(0.5-x3,0) + 2.5*x4*x5 + 1.2*x6 + N(0,1); x7 = x1 + N(0,0.25); x8 = x2 + N(0,0.25); remaining columns pure noise. (max(...) applied elementwise, i.e. pmax with 0.)",
+    "For each dataset, do an OUT-OF-SAMPLE comparison (held-out test split, e.g. 70/30 with fixed seed, or outer CV): train fit_bir(x_train, y_train, n=10 default) and predict on x_test (type='all' to also get se). Baseline per dataset: plain earth (earth(x_train, y_train)) and/or bagged earth (caret::bagEarth) — pick a consistent, fair state-of-the-art choice per dataset and state it. Report OOS RMSE for BIR vs baseline.",
+    "spam: treat binary `type` as numeric 0/1 and evaluate by RMSE. Note that quantile bucketing a two-value y triggers the distinct-buckets ERROR from fit_bir at n>=2; capture that error and report it as an EXPECTED, reportable outcome (NOT a bug). Do not force a workaround that alters the method.",
+    "solubility (WIDE, p=228): BIR fits n*p = ~2280 earth models per fit on thin buckets (p>>rows-in-bucket). Run under a hard timeout with a small smoke test first. If full-size n=10 is impractical/hangs, report the cost honestly and optionally include a clearly-labeled smaller-n or subsampled run instead of hanging. Always record whether it completed and the wall-clock cost.",
+    "Calibration sanity-check of se: on the datasets that run, check whether larger predicted se correlates with larger actual |residual| (e.g. Spearman correlation of se vs abs error, or binning se into quantiles and comparing mean abs error per bin). Report the finding honestly.",
+    "Run each dataset as its own timed invocation with hard timeouts (Rscript with a wall-clock guard; use the bash `timeout` command). Capture RMSE numbers, wall-clock, and any errors/timeouts to a results file. Write throwaway run logs under the repo but keep only the final results doc + eval scripts in git.",
+    "Write the results doc /projects/sandbox/earth/bucketimpute/inst/eval/BIR-evaluation-results.md (committed): summarize the method (including the lars substitution), the exact evaluation protocol (splits/seeds), a table of OOS RMSE BIR vs baseline per dataset, the se calibration finding, wall-clock costs, and HONEST verdicts including where BIR loses to the baseline and any datasets that could not run (spam distinct-buckets error; solubility cost if applicable)."
+  ],
+  "acceptance_criteria": [
+    "Evaluation scripts exist under bucketimpute/inst/eval/ and are reproducible (fixed seeds).",
+    "OOS RMSE reported for BIR vs a stated baseline for Boston and synthetic_large at minimum; solubility either completes (with cost recorded) or its cost/impracticality is reported honestly with an optional labeled smaller run; spam's distinct-buckets error is captured and reported as expected.",
+    "A committed markdown results doc BIR-evaluation-results.md contains: method summary (noting lars), protocol, RMSE comparison table, se calibration finding, wall-clock costs, and honest verdicts including losses and non-runnable datasets.",
+    "Evaluation uses out-of-sample data (held-out/CV), NOT in-sample affinities.",
+    "No run logs or build artifacts left staged in git beyond the eval scripts and results doc."
+  ],
+  "verification": [
+    "cd /projects/sandbox/earth && timeout 600 Rscript bucketimpute/inst/eval/<boston-run>.R 2>&1 | tail -30 (confirm BIR + baseline RMSE printed)",
+    "cd /projects/sandbox/earth && timeout 1200 Rscript bucketimpute/inst/eval/<synthetic-run>.R 2>&1 | tail -30",
+    "Confirm BIR-evaluation-results.md exists and contains a populated RMSE comparison table (not placeholders)."
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
