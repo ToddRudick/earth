@@ -29,6 +29,19 @@ suppressWarnings(
   RNGkind("Mersenne-Twister", "Inversion", "Rejection")
 )
 
+## bir_seed(): the ONLY way this harness seeds before a BIR fit. It re-pins the
+## RNG algorithm AND re-seeds in one call, so a fit cannot silently pick up a
+## non-default sampler that some dependency's .onLoad may have installed after
+## eval_common.R was sourced. Every fit_bir()/earth() call in this file that
+## must be reproducible is immediately preceded by bir_seed(); this guarantees
+## the lars::cv.lars fold draw (see the determinism note on bir_oof_feature())
+## is byte-identical on every host regardless of the ambient RNGkind.
+bir_seed <- function(seed = SEED) {
+  suppressWarnings(RNGkind("Mersenne-Twister", "Inversion", "Rejection"))
+  set.seed(seed)
+  invisible(NULL)
+}
+
 ## Root-mean-squared error.
 rmse <- function(actual, predicted) {
   sqrt(mean((as.numeric(actual) - as.numeric(predicted))^2))
@@ -49,8 +62,20 @@ r2 <- function(actual, predicted) {
 }
 
 ## 70/30 train/test split of row indices, reproducible given a seed.
+##
+## CANONICAL ROW ORDER (part of the reproducibility contract). The returned
+## train/test indices are SORTED ascending, so the training design matrix is
+## always presented to BIR in the dataset's native row order. This is not
+## cosmetic: BIR's penalty selection calls lars::cv.lars, whose cross-fit folds
+## are cv.folds(n) = split(sample(1:n), rep(1:K, length = n)). Because the fold
+## is chosen by POSITION, two runs that pass the SAME training rows in a
+## DIFFERENT order (e.g. sorted indices vs. the raw sample.int() permutation
+## order) put different data rows in each CV fold, select a different lasso
+## fraction, and produce different bir_pred values and different downstream
+## earth numbers -- even at the same seed. Sorting fixes one canonical order so
+## the whole study is order-invariant to how the split happened to be drawn.
 train_test_split <- function(n_rows, prop_train = 0.70, seed = SEED) {
-  set.seed(seed)
+  bir_seed(seed)
   idx <- sample.int(n_rows)
   n_train <- floor(prop_train * n_rows)
   list(train = sort(idx[seq_len(n_train)]),
@@ -60,7 +85,7 @@ train_test_split <- function(n_rows, prop_train = 0.70, seed = SEED) {
 ## Fit BIR on the training split and predict (type = "all") on the test split.
 ## Returns a list with fit, se, affinities, plus timing, or an error record.
 run_bir <- function(x_train, y_train, x_test, n = 10, ...) {
-  set.seed(SEED)
+  bir_seed()
   t0 <- proc.time()[["elapsed"]]
   fit <- tryCatch(
     fit_bir(x_train, y_train, n = n, ...),
@@ -77,7 +102,7 @@ run_bir <- function(x_train, y_train, x_test, n = 10, ...) {
 
 ## Baseline: plain degree-2 earth (a fair, widely used MARS baseline).
 run_earth <- function(x_train, y_train, x_test, degree = 2, ...) {
-  set.seed(SEED)
+  bir_seed()
   t0 <- proc.time()[["elapsed"]]
   fit <- earth(x = as.matrix(x_train), y = as.numeric(y_train),
                degree = degree, ...)
@@ -95,20 +120,33 @@ run_earth <- function(x_train, y_train, x_test, degree = 2, ...) {
 ## bir_pred ever used a BIR that saw that row. The TEST-row bir_pred is produced
 ## by a SINGLE BIR fit on the FULL training split.
 ##
-## Reproducibility / seed scheme (deterministic from a CLEAN install):
-##   * The RNG algorithm is pinned once at the top of this file
-##     (RNGkind("Mersenne-Twister", "Inversion", "Rejection")), so set.seed()
-##     selects the identical stream on any R >= 3.6 host.
-##   * Fold assignment uses set.seed(SEED) then sample() of fold labels, so the
-##     partition is fixed given SEED and K, and does NOT depend on any RNG
-##     state left behind by earlier code in the session.
-##   * BIR's CV-lasso penalty selection (cv.lars) consumes the global RNG, so
-##     EACH fold fit AND the full-train fit call set.seed(SEED) immediately
-##     before fit_bir(). Because every fit re-seeds from a fixed constant (not
-##     from the accumulated stream), the number of BIR fits / RNG draws that
-##     precede a given fit cannot change its result: every fit is independently
-##     reproducible. This is what makes `Rscript eval_stacking.R <ds>` produce
-##     identical numbers on every fresh session.
+## Reproducibility / seed scheme (deterministic from a CLEAN install AND
+## identical across independent fresh sessions on any R >= 3.6 host):
+##   * The RNG algorithm is re-pinned and re-seeded together by bir_seed()
+##     (RNGkind("Mersenne-Twister","Inversion","Rejection") + set.seed(SEED))
+##     immediately before EVERY fit. Re-pinning at each fit -- not merely once
+##     at file load -- means no dependency's .onLoad or stray RNGkind() can
+##     leave a non-default sampler in effect when lars::cv.lars draws its folds.
+##   * ROOT CAUSE this guards against (previously mis-diagnosed as a stale
+##     install). BIR's penalty selection calls lars::cv.lars, and
+##     lars:::cv.folds(n, K) = split(sample(1:n), rep(1:K, length = n)). That
+##     sample(1:n) is a GLOBAL-RNG draw whose result depends on BOTH (i) the RNG
+##     sample.kind -- pre-3.6 "Rounding" vs R>=3.6 "Rejection" give completely
+##     different permutations at the same seed -- and (ii) the POSITIONAL order
+##     of the rows handed to fit_bir, since the fold is picked by position. So
+##     the same training rows in a different order, or the same code under a
+##     different default sampler, select a different lasso fraction and shift
+##     every downstream number. bir_seed() nails down (i); the SORTED canonical
+##     row order from train_test_split() nails down (ii).
+##   * Fold assignment for the outer K-fold cross-fit uses bir_seed() then
+##     sample() of fold labels, so the partition is fixed given SEED and K and
+##     does NOT depend on any RNG state left behind by earlier code.
+##   * Because every fit re-seeds from the fixed constant SEED (not the
+##     accumulated stream), the number of prior BIR fits / RNG draws cannot
+##     change a given fit: every fit is independently reproducible. This is what
+##     makes two independent `Rscript eval_stacking.R <ds>` runs -- in the SAME
+##     session or in SEPARATE fresh processes on different hosts -- produce
+##     byte-identical numbers.
 ##
 ## Returns list(oof_train = <numeric length nrow(x_train)>,
 ##              test      = <numeric length nrow(x_test)>,
@@ -123,7 +161,7 @@ bir_oof_feature <- function(x_train, y_train, x_test, n = 10, K = 5,
   t0 <- proc.time()[["elapsed"]]
 
   ## fixed, reproducible fold labels
-  set.seed(seed)
+  bir_seed(seed)
   folds <- sample(rep_len(seq_len(K), n_tr))
 
   oof <- rep(NA_real_, n_tr)
@@ -132,7 +170,7 @@ bir_oof_feature <- function(x_train, y_train, x_test, n = 10, K = 5,
     in_test  <- which(folds == f)
     in_train <- which(folds != f)
     tf0 <- proc.time()[["elapsed"]]
-    set.seed(seed)                       # reproducible cv.lars per fold
+    bir_seed(seed)                       # reproducible cv.lars per fold
     fit_f <- tryCatch(
       fit_bir(x_train[in_train, , drop = FALSE], y_train[in_train],
               n = n, ...),
@@ -151,7 +189,7 @@ bir_oof_feature <- function(x_train, y_train, x_test, n = 10, K = 5,
   }
 
   ## TEST column: single BIR fit on the FULL training split.
-  set.seed(seed)
+  bir_seed(seed)
   full_fit <- tryCatch(
     fit_bir(x_train, y_train, n = n, ...),
     error = function(e) e
@@ -241,7 +279,7 @@ report_block <- function(name, bir_rmse, base_rmse, base_name,
 ## (bir_old, moe_soft, floor), the fitted model, and timing. run_bir (old
 ## behaviour, no experts) is left intact for back-compat and other callers.
 run_bir_experts <- function(x_train, y_train, x_test, n = 10, ...) {
-  set.seed(SEED)
+  bir_seed()
   t0 <- proc.time()[["elapsed"]]
   fit <- tryCatch(
     fit_bir(x_train, y_train, n = n, experts = TRUE, ...),

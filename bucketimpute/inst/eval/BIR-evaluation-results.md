@@ -669,33 +669,69 @@ that row, inflating its apparent value. Instead:
 Then fit `earth(cbind(x_train, bir_pred = oof_train), y_train, degree = 2)` and
 score on `cbind(x_test, bir_pred = test_pred)`, preserving column names/order.
 
-**Seed / K scheme (deterministic from a clean install).** `SEED = 2024`
-throughout. Fold labels are drawn once under `set.seed(SEED)` (fixed given
-`SEED` and `K`). **The exact stacked-earth magnitude is seed-sensitive**: BIR's
-CV-lasso penalty selection (`lars::cv.lars`) draws its cross-validation folds
-from the **global RNG** across all `K + 1` BIR fits, so the fitted lasso penalty
-— and therefore every `bir_pred` value and every downstream `earth` number —
-depends on the seeding scheme and on the RNG algorithm in effect. The canonical
-scheme that makes the numbers below reproduce identically on every fresh session
-is:
+**Seed / K scheme (deterministic across independent fresh sessions).**
+`SEED = 2024` throughout. Fold labels are drawn once under `bir_seed(SEED)`
+(fixed given `SEED` and `K`). **The exact stacked-earth magnitude is
+seed-sensitive**: BIR's CV-lasso penalty selection (`lars::cv.lars`) draws its
+cross-validation folds from the **global RNG**, so the fitted lasso penalty —
+and therefore every `bir_pred` value and every downstream `earth` number —
+depends on the RNG state in effect at each fit.
 
-1. `eval_common.R` pins the RNG algorithm at load time with
-   `RNGkind("Mersenne-Twister", "Inversion", "Rejection")` (the R ≥ 3.6
-   default), so `set.seed(SEED)` selects the same stream on any host R and does
-   not silently shift with an older/non-default sampler.
-2. `set.seed(SEED)` is called immediately before *each* fold fit **and** before
-   the single full-train fit. Because every fit re-seeds from the fixed constant
-   `SEED` rather than continuing the accumulated stream, the number of prior BIR
-   fits / RNG draws cannot change a given fit — each fit is independently
-   reproducible.
+**Resolved root cause of a prior cross-environment discrepancy.** An earlier
+version of this study reported *different* stable Boston numbers on two hosts
+from the same committed code and seed. The cause was traced to
+`lars:::cv.folds(n, K) = split(sample(1:n), rep(1:K, length = n))`: the
+`sample(1:n)` inside `cv.lars` is a global-RNG draw whose result depends on
+**two** things that a single seed does not pin down —
+
+1. **the RNG `sample.kind`.** Under R's pre-3.6 `"Rounding"` sampler,
+   `sample(1:n)` returns a *completely different* permutation than under the
+   R ≥ 3.6 `"Rejection"` sampler at the *same* seed, so the CV folds — and the
+   selected lasso fraction — differ. A single `RNGkind(...)` pin at file-load
+   time is not enough if any dependency's `.onLoad`, or any stray `RNGkind()`
+   call, re-installs a non-default sampler *after* the pin but *before* a fit.
+2. **the positional row order** of the training matrix handed to `fit_bir`.
+   Because `cv.folds` assigns folds by position, the *same* training rows in a
+   *different* order (e.g. the raw `sample.int()` permutation order vs. sorted
+   indices) place different data rows in each fold, selecting a different lasso
+   fraction and shifting every downstream number.
+
+The canonical protocol that makes the numbers below reproduce **byte-for-byte
+on any R ≥ 3.6 host, in any fresh session**, nails down both:
+
+1. **`bir_seed()` (in `eval_common.R`) re-pins AND re-seeds together —**
+   `RNGkind("Mersenne-Twister", "Inversion", "Rejection")` immediately followed
+   by `set.seed(SEED)` — and is called immediately before **every** fit
+   (each fold fit, the full-train fit, the fold-label draw, and every baseline
+   `earth`). Re-pinning at *each* fit (not once at load) means no
+   later-loaded package and no rogue `RNGkind()` can leave a non-default
+   sampler in effect when `cv.lars` draws its folds.
+2. **`train_test_split()` returns SORTED indices**, so the training design is
+   always presented to BIR in the dataset's native row order — one canonical
+   order, independent of how the split permutation happened to be drawn.
+
+Because every fit re-seeds from the fixed constant `SEED` (not the accumulated
+stream), the number of prior BIR fits / RNG draws cannot change a given fit —
+each fit is independently reproducible.
+
+> **Note on a naive direct-fit check.** A quick `set.seed(2024);
+> tr <- sample.int(n, round(0.7*n)); set.seed(2024); fit_bir(x[tr,], y[tr])`
+> gives Boston BIR-alone R2 ≈ 0.6420, *not* the 0.6385 reported here. That is
+> **not** a contradiction: `sample.int(n, k)` leaves `tr` in draw order while
+> the harness sorts it, and — as explained above — the row order alone changes
+> the `cv.lars` fold composition and hence the fitted penalty. On the identical
+> sorted training rows the direct fit reproduces 0.6385 exactly. The sorted
+> order is the harness's canonical protocol.
 
 Outer protocol is the harness standard: 70/30 outer holdout, `n = 10` BIR
 buckets (4 for the solubility smoke), degree-2 `earth`. `K = 5` for the cheap
 datasets; **`K = 3` for solubility-full** to keep it within the cost budget (see
 below). The out-of-fold scheme fits BIR `K + 1` times per dataset. All numbers
-in this section were verified to reproduce byte-for-byte across two consecutive
-fresh `Rscript eval_stacking.R <dataset>` runs on a clean `R CMD INSTALL` of the
-current `bucketimpute` source (seed 2024, R 4.5.x).
+in this section were verified to reproduce byte-for-byte across two independent
+fresh `Rscript eval_stacking.R <dataset>` sessions on a clean `R CMD INSTALL` of
+the current `bucketimpute` source (seed 2024, R 4.5.3, lars 1.3), and to be
+invariant to a deliberately adversarial ambient `RNGkind(..., "Rounding")` set
+before the run.
 
 Reproduce (each dataset a separate timed invocation):
 

@@ -140,7 +140,7 @@ x_test_aug  <- cbind(d$x_test,  bir_pred = oof$test)
 stopifnot(identical(colnames(x_train_aug), colnames(x_test_aug)),
           "bir_pred" %in% colnames(x_train_aug))
 
-set.seed(SEED)
+bir_seed()
 stacked_fit  <- earth(x = x_train_aug, y = as.numeric(d$y_train), degree = 2)
 stacked_pred <- as.numeric(predict(stacked_fit, x_test_aug))
 r2_b  <- r2(d$y_test, stacked_pred);  rmse_b <- rmse(d$y_test, stacked_pred)
