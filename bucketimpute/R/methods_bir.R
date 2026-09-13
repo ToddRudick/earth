@@ -21,6 +21,13 @@ print.bir <- function(x, ...) {
               x$lasso_s, x$lasso_mode))
   cat(sprintf("  min_bucket_rows: %d   scale_floor: %g\n",
               as.integer(x$min_bucket_rows), x$scale_floor))
+  if (is.null(x$experts)) {
+    cat("  experts     : none (affinity_lasso only)\n")
+  } else {
+    cat(sprintf("  experts     : %s (%d buckets; method = \"moe_soft\")\n",
+                if (is.null(x$expert_type)) "yes" else x$expert_type,
+                length(x$experts)))
+  }
   invisible(x)
 }
 

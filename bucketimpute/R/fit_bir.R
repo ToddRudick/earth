@@ -46,6 +46,12 @@
 #'     changes.
 #'   \item \strong{Bucket variances.} For each bucket \code{k},
 #'     \code{bucket_vars[k] = var(y[bucket == k])} (single-row buckets give 0).
+#'   \item \strong{Optional per-bucket experts (soft mixture-of-experts).} When
+#'     \code{experts} is enabled, an additional \emph{expert} regressor of
+#'     \code{y} on all of \code{x} is fit within each bucket \code{k}:
+#'     \code{earth(x_k, y_k, degree = 2)}. These experts are only used by
+#'     \code{\link{predict.bir}} with \code{method = "moe_soft"}; they do not
+#'     touch the default affinity-lasso path. See the \code{experts} parameter.
 #' }
 #'
 #' @param x A numeric matrix or data.frame of predictors (all columns numeric,
@@ -66,7 +72,26 @@
 #' @param scale_floor Small positive lower bound applied to every residual scale
 #'   \code{s_{k,j}} to avoid divide-by-zero in the affinity computation. Default
 #'   \code{1e-8}.
-#' @param ... Extra arguments passed through to \code{\link[earth]{earth}}.
+#' @param experts Optional switch enabling the soft mixture-of-experts mode
+#'   (\dQuote{Option A}). Defaults to \code{NULL} (off), which preserves the
+#'   current behaviour exactly. When truthy (\code{TRUE} or the string
+#'   \code{"earth"}) \code{fit_bir} additionally fits, for each bucket \code{k},
+#'   a degree-2 \code{\link[earth]{earth}} \emph{expert} of \code{y} on all of
+#'   \code{x} using that bucket's rows: \code{earth(x_k, y_k, degree = 2)}. The
+#'   fitted experts are stored in the \code{experts} field of the returned
+#'   object and are consumed by \code{\link{predict.bir}} with
+#'   \code{method = "moe_soft"}. If a bucket is too thin to fit a sensible
+#'   degree-2 expert (fewer than \code{max(2 * p, min_bucket_rows)} rows) or the
+#'   earth fit errors, \code{fit_bir} falls back gracefully to a constant expert
+#'   equal to that bucket's \code{mean(y_k)}. The expert \code{degree} is fixed
+#'   at 2 and is \emph{not} taken from \code{...} (which is reserved for the
+#'   degree-1 imputation fits); \code{...} is not forwarded to the expert fits
+#'   to avoid a \code{degree} conflict. \strong{Known tension:} because buckets
+#'   are equal-frequency slices \emph{of} \code{y}, within a bucket \code{y} has
+#'   small variance, so an expert may mostly learn the bucket mean; this is
+#'   expected.
+#' @param ... Extra arguments passed through to \code{\link[earth]{earth}} for
+#'   the per-bucket, per-column degree-1 imputation fits (not the experts).
 #'
 #' @return An S3 object of class \code{"bir"}: a list containing
 #'   \describe{
@@ -87,6 +112,16 @@
 #'       expect.}
 #'     \item{\code{min_bucket_rows}, \code{scale_floor}}{Stored for
 #'       transparency.}
+#'     \item{\code{experts}}{\code{NULL} when \code{experts} was not requested
+#'       (the default), preserving back-compatibility. When requested, a
+#'       length-\code{n} list; element \code{k} is either a fitted degree-2
+#'       \code{earth} expert of \code{y} on \code{x} for bucket \code{k}, or a
+#'       constant-mean fallback of class \code{"bir_const_expert"} (a list with
+#'       a single numeric \code{value = mean(y_k)}) when the bucket was too thin
+#'       or the earth fit errored.}
+#'     \item{\code{expert_type}}{Present only when experts were requested; a
+#'       string recording the expert family and degree, currently
+#'       \code{"earth_degree2"}.}
 #'   }
 #'
 #' @note \strong{Reproducibility.} The lasso penalty is selected by
@@ -116,7 +151,7 @@
 #' @importFrom lars lars cv.lars
 #' @export
 fit_bir <- function(x, y, n = 10, min_bucket_rows = NULL,
-                    scale_floor = 1e-8, ...) {
+                    scale_floor = 1e-8, experts = NULL, ...) {
   ## ---- input validation -------------------------------------------------
   if (!is.numeric(n) || length(n) != 1L || n < 2) {
     stop("`n` (number of buckets) must be a single number >= 2.")
@@ -168,6 +203,21 @@ fit_bir <- function(x, y, n = 10, min_bucket_rows = NULL,
   if (!is.numeric(scale_floor) || length(scale_floor) != 1L ||
       scale_floor <= 0) {
     stop("`scale_floor` must be a single positive number.")
+  }
+
+  ## `experts`: NULL/FALSE => off (default, current behaviour); TRUE or
+  ## "earth" => fit per-bucket degree-2 earth experts of y on x.
+  fit_experts <- FALSE
+  if (!is.null(experts)) {
+    if (isTRUE(experts) ||
+        (is.character(experts) && length(experts) == 1L &&
+         identical(experts, "earth"))) {
+      fit_experts <- TRUE
+    } else if (isFALSE(experts)) {
+      fit_experts <- FALSE
+    } else {
+      stop("`experts` must be NULL/FALSE (off), or TRUE / \"earth\" (on).")
+    }
   }
 
   ## ---- 1. bucket assignment ---------------------------------------------
@@ -238,6 +288,32 @@ fit_bir <- function(x, y, n = 10, min_bucket_rows = NULL,
     if (length(yk) < 2L) 0 else stats::var(yk)
   }, numeric(1))
 
+  ## ---- 5b. optional per-bucket experts (soft mixture-of-experts) --------
+  experts_list <- NULL
+  expert_type <- NULL
+  if (fit_experts) {
+    ## a bucket needs enough rows for a degree-2 earth of y on p predictors;
+    ## otherwise fall back to a constant bucket-mean expert.
+    expert_min_rows <- max(2L * p, as.integer(min_bucket_rows))
+    experts_list <- vector("list", n)
+    for (k in seq_len(n)) {
+      rows_k <- which(bucket == k)
+      x_k <- x[rows_k, , drop = FALSE]
+      y_k <- y[rows_k]
+      const_expert <- structure(list(value = mean(y_k)),
+                                 class = "bir_const_expert")
+      if (length(rows_k) < expert_min_rows) {
+        experts_list[[k]] <- const_expert
+        next
+      }
+      experts_list[[k]] <- tryCatch(
+        earth::earth(x = x_k, y = y_k, degree = 2),
+        error = function(e) const_expert
+      )
+    }
+    expert_type <- "earth_degree2"
+  }
+
   ## ---- 6. return value --------------------------------------------------
   structure(
     list(
@@ -252,7 +328,9 @@ fit_bir <- function(x, y, n = 10, min_bucket_rows = NULL,
       p = p,
       colnames = cn,
       min_bucket_rows = min_bucket_rows,
-      scale_floor = scale_floor
+      scale_floor = scale_floor,
+      experts = experts_list,
+      expert_type = expert_type
     ),
     class = "bir"
   )

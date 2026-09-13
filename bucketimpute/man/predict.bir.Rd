@@ -4,7 +4,13 @@
 \alias{predict.bir}
 \title{Predict from a Bucketed Imputation Regression (BIR) model}
 \usage{
-\method{predict}{bir}(object, newdata, type = c("response", "affinity", "all"), ...)
+\method{predict}{bir}(
+  object,
+  newdata,
+  type = c("response", "affinity", "all"),
+  method = c("affinity_lasso", "moe_soft"),
+  ...
+)
 }
 \arguments{
 \item{object}{A fitted \code{"bir"} object from \code{\link{fit_bir}}.}
@@ -18,6 +24,18 @@ an error.}
 predictions), \code{"affinity"} (the \code{N x n} matrix of affinities), or
 \code{"all"} (a list with \code{fit}, \code{se}, and \code{affinities}).}
 
+\item{method}{One of \code{"affinity_lasso"} (default) or \code{"moe_soft"}.
+\code{"affinity_lasso"} is the original behaviour: affinities are fed to
+the stored lasso path (\code{predict.lars}). \code{"moe_soft"} is the soft
+mixture-of-experts blend (\dQuote{Option A}): using the same affinities as
+a gate, each row's weights are \code{w_k = affinity_k / sum_j affinity_j}
+(reusing the all-zero-affinity guard, so a fully degenerate row becomes an
+unweighted average), and the point prediction is
+\code{yhat = sum_k w_k * expert_k(x)} where \code{expert_k} is the
+per-bucket degree-2 earth expert (or its constant-mean fallback) fit by
+\code{\link{fit_bir}} with \code{experts} enabled. Requesting
+\code{"moe_soft"} on a model fit without experts is an error.}
+
 \item{...}{Unused; present for S3 compatibility.}
 }
 \value{
@@ -30,6 +48,18 @@ Depends on \code{type}:
       (non-negative numeric vector, the predictive scale), and
       \code{affinities} (the affinity matrix).}
   }
+  Under \code{method = "moe_soft"} the \code{"response"} value is the blended
+  expert prediction \code{sum_k w_k * expert_k(x)}; \code{"affinity"} still
+  returns the raw affinity matrix regardless of method; and \code{"all"}
+  returns \code{fit} = the blended prediction alongside the same \code{se}
+  and \code{affinities} as the default path.
+
+  \strong{Known tension.} Buckets are equal-frequency slices \emph{of}
+  \code{y}, so within a bucket \code{y} has small variance and each expert
+  may mostly learn its bucket mean; the \code{moe_soft} blend can therefore
+  behave close to an affinity-weighted bucket-mean predictor. This is
+  expected.
+
   Note on the \code{se} fallback: the predictive scale weights the per-bucket
   variances by each row's affinities normalized to sum to 1. If a row has all
   affinities exactly zero (a fully degenerate row), the normalization would
