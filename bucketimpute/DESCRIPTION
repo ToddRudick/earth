@@ -5,7 +5,8 @@ Version: 0.1.0
 Authors@R: person("BIR", "Author", email = "bir@example.com", role = c("aut", "cre"))
 Description: Bucketed Imputation Regression (BIR) is a regression method that
     divides the continuous response into equal-frequency quantile buckets,
-    fits per-bucket degree-1 'earth' (MARS) models that reconstruct each
+    fits per-bucket linear degree-2 'earth' (MARS) imputation models (linear
+    main effects plus pairwise interactions, no hinges) that reconstruct each
     predictor from the others, converts per-bucket standardized reconstruction
     error into affinity features, and fits a cross-validated lasso of the
     response on those affinities. Predictions return a point estimate plus a

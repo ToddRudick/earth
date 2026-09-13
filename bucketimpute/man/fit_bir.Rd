@@ -26,7 +26,7 @@ no missing values). Column names are preserved; if absent they are set to
 defaults to 10.}
 
 \item{min_bucket_rows}{Minimum number of rows required in each bucket for the
-per-bucket, per-column degree-1 earth fits to be sensible. If \code{NULL}
+per-bucket, per-column imputation earth fits to be sensible. If \code{NULL}
 (the default) a sensible value of \code{max(p + 2, 10)} is used, where
 \code{p} is the number of predictor columns; each column model regresses on
 the other \code{p - 1} columns, so a bucket should hold at least a handful
@@ -51,14 +51,19 @@ degree-2 expert (fewer than \code{max(2 * p, min_bucket_rows)} rows) or the
 earth fit errors, \code{fit_bir} falls back gracefully to a constant expert
 equal to that bucket's \code{mean(y_k)}. The expert \code{degree} is fixed
 at 2 and is \emph{not} taken from \code{...} (which is reserved for the
-degree-1 imputation fits); \code{...} is not forwarded to the expert fits
+imputation fits); \code{...} is not forwarded to the expert fits
 to avoid a \code{degree} conflict. \strong{Known tension:} because buckets
 are equal-frequency slices \emph{of} \code{y}, within a bucket \code{y} has
 small variance, so an expert may mostly learn the bucket mean; this is
 expected.}
 
 \item{...}{Extra arguments passed through to \code{\link[earth]{earth}} for
-the per-bucket, per-column degree-1 imputation fits (not the experts).}
+the per-bucket, per-column imputation fits (not the experts). The
+imputation fits use fixed defaults \code{degree = 2},
+\code{linpreds = TRUE}, and \code{thresh = 1e-6} (linear main effects plus
+pairwise interactions, no hinges); passing any of these through \code{...}
+overrides the corresponding default, and every other argument is forwarded
+to earth() unchanged.}
 }
 \value{
 An S3 object of class \code{"bir"}: a list containing
@@ -95,12 +100,24 @@ An S3 object of class \code{"bir"}: a list containing
 \description{
 \code{fit_bir} implements Bucketed Imputation Regression exactly as described
 in the package specification. The response \code{y} is split into \code{n}
-equal-frequency quantile buckets; within each bucket a degree-1
-\code{\link[earth]{earth}} (MARS) model is fit for every predictor column
-(reconstructing that column from all of the other predictors); per-bucket
-standardized absolute reconstruction errors are turned into
-\emph{affinity} features; and finally a cross-validated lasso of \code{y} on
-those affinity features is fit.
+equal-frequency quantile buckets; within each bucket a linear, degree-2
+\code{\link[earth]{earth}} (MARS) \emph{imputation} model is fit for every
+predictor column (reconstructing that column from all of the other
+predictors); per-bucket standardized absolute reconstruction errors are
+turned into \emph{affinity} features; and finally a cross-validated lasso of
+\code{y} on those affinity features is fit.
+}
+\details{
+The per-bucket, per-column imputation models are fit with
+\code{earth(x_j_pred, y_j, degree = 2, linpreds = TRUE, thresh = 1e-6)}:
+\code{linpreds = TRUE} makes every predictor enter \strong{linearly} (no
+hinge functions), \code{degree = 2} allows pairwise interaction terms, and
+\code{thresh = 1e-6} sets earth's forward-pass delta-GRSq stopping threshold
+very small so the forward pass keeps adding terms until almost no
+improvement remains. The result is a model of linear main effects plus
+pairwise interactions with no hinges. (This replaces the earlier degree-1
+hinge imputation models.) Any of \code{degree}, \code{linpreds}, or
+\code{thresh} supplied through \code{...} overrides these fixed defaults.
 }
 \note{
 \strong{Reproducibility.} The lasso penalty is selected by
@@ -125,9 +142,10 @@ those affinity features is fit.
     \emph{distinct} non-empty buckets (for example when \code{y} has heavy
     ties or is near-binary), \code{fit_bir} stops with a clear error naming
     the distinct-buckets problem rather than silently merging buckets.
-  \item \strong{Per-bucket earth models.} For each bucket \code{k} and each
-    column \code{j}, fit \code{earth(x_k[, -j], x_k[, j], degree = 1, ...)}
-    and record the residual scale
+  \item \strong{Per-bucket earth imputation models.} For each bucket \code{k}
+    and each column \code{j}, fit \code{earth(x_k[, -j], x_k[, j],
+    degree = 2, linpreds = TRUE, thresh = 1e-6, ...)} (linear main effects
+    plus pairwise interactions, no hinges) and record the residual scale
     \code{s_{k,j} = sqrt(mean(residuals^2))}. Each scale is floored at
     \code{scale_floor} to avoid divide-by-zero when a bucket's fit is
     essentially intercept-only. Column names and order are preserved so that

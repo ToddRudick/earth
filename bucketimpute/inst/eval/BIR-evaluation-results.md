@@ -24,9 +24,14 @@ BIR (see `bucketed-imputation-regression-spec.md`) works as follows:
 
 1. Split the continuous response `y` into `n` equal-frequency quantile buckets
    (default `n = 10`).
-2. In each bucket `k`, fit a degree-1 `earth` (MARS) model for every predictor
-   column `j`, reconstructing column `j` from the other `p - 1` columns. Record
-   the residual scale `s_{k,j} = sqrt(mean(resid^2))`.
+2. In each bucket `k`, fit an `earth` (MARS) imputation model for every
+   predictor column `j`, reconstructing column `j` from the other `p - 1`
+   columns. Record the residual scale `s_{k,j} = sqrt(mean(resid^2))`. **Note:**
+   these imputation models were originally degree-1 hinge fits; they are now fit
+   as `earth(..., degree = 2, linpreds = TRUE, thresh = 1e-6)` (linear main
+   effects plus pairwise interactions, no hinges). Sections 3-7 report the
+   original degree-1 hinge imputation; **section 8** reports the new settings
+   and compares old vs new.
 3. For each row, per bucket, compute an *unusualness* score
    `u_k = sum_j |x_j - predict(model_{k,j})| / s_{k,j}` and convert it to an
    *affinity* `a_k = 1 / (1 + u_k)` in `(0, 1]`. This gives an `N x n` affinity
@@ -309,6 +314,182 @@ solubility-smoke, and marginally synthetic_large), the per-bucket regression
 never enough to overtake the existing lasso gate. Net: `moe_soft` is a correct,
 cleanly optional addition that is most useful as a robustness/diagnostic mode,
 not a general accuracy improvement over the default BIR or over MARS.
+
+## 8. New imputation-model settings: linear, degree-2, tiny stop threshold
+
+This section augments (does not replace) the results above. It re-runs the
+identical OOS harness (70/30 holdout, `set.seed(2024)`, `n = 10`, default
+`affinity_lasso` BIR path) after **changing how the per-bucket per-column
+imputation models are fit**. Everything else in the pipeline (bucketing,
+affinity construction, the lars CV-lasso, the degree-2 moe_soft experts) is
+unchanged.
+
+### What changed
+
+Previously each imputation model (reconstructing predictor column `j` from the
+other `p - 1` columns within bucket `k`) was a **degree-1 MARS (hinge)** fit:
+
+```r
+earth(x = xj_pred, y = yj, degree = 1)
+```
+
+It is now fit as:
+
+```r
+earth(x = xj_pred, y = yj, degree = 2, linpreds = TRUE, thresh = 1e-6)
+```
+
+- `linpreds = TRUE` — predictors enter **linearly** (no hinge functions).
+- `degree = 2` — allow **pairwise interaction** terms.
+- `thresh = 1e-6` — earth's forward-pass delta-GRSq stopping threshold is set
+  very small (default is `0.001`), so the forward pass keeps adding terms until
+  almost no improvement remains.
+
+The result is an imputation model of **linear main effects plus pairwise
+interactions, with no hinges**. This applies to the imputation fits **only** —
+the optional `moe_soft` per-bucket experts remain degree-2 `earth(x_k, y_k)`
+fits and the final lasso is unchanged. The three settings are the fixed
+imputation defaults; any of `degree`, `linpreds`, `thresh` passed through
+`fit_bir(..., )` still overrides them, and all other `...` args are forwarded to
+`earth()` as before.
+
+### OOS-R2 and RMSE: old degree-1 hinge imputation vs new degree-2/linpreds/thresh=1e-6
+
+`affinity_lasso` (default BIR path), `set.seed(2024)`, 70/30, `n = 10`. Higher
+R2 / lower RMSE is better. "Old" columns are the section-3/section-7 numbers
+recorded for the previous degree-1 hinge imputation; "New" columns are freshly
+measured with the new imputation models.
+
+| Dataset | Old OOS-R2 | New OOS-R2 | Old RMSE | New RMSE | Effect on BIR |
+|---|---|---|---|---|---|
+| Boston (`medv`) | 0.5730 | **0.6233** | 5.5766 | **5.2382** | **helped** |
+| synthetic_large | 0.4697 | **0.5524** | 1.5321 | **1.4076** | **helped** |
+| solubility (full, n=10, 228 preds) | -0.0012 | -0.0017 | 2.0764 | 2.0770 | neutral (both ~0) |
+| solubility (smoke, 20 preds, n=4) — probe only | 0.3789 | 0.3371 | 1.6355 | 1.6896 | slightly hurt (probe) |
+| spam (`type` as 0/1) | did not run | did not run | — | — | expected distinct-buckets error (unchanged) |
+
+Baseline `earth(deg2)` is unaffected by this change (Boston RMSE 3.8020 / R2
+0.8015; synthetic_large RMSE 1.0570 / R2 0.7476; solubility-full RMSE 55.13),
+so the baseline still beats BIR on the two clean regression benchmarks — the
+change narrows, but does not close, that gap.
+
+For completeness, the four-way `moe_soft` comparison under the new imputation
+(same single-fit protocol as section 7):
+
+| Dataset | earth(deg2) | affinity_lasso (new) | moe_soft (new) | bucket_mean_floor (new) |
+|---|---|---|---|---|
+| Boston — R2 / RMSE | 0.8015 / 3.8020 | 0.6233 / 5.2382 | 0.5547 / 5.6954 | 0.5226 / 5.8971 |
+| synthetic_large — R2 / RMSE | 0.7476 / 1.0570 | 0.5524 / 1.4076 | 0.1572 / 1.9314 | 0.0826 / 2.0151 |
+| solubility full — R2 / RMSE | -704.73 / 55.13 | -0.0017 / 2.0770 | 0.4261 / 1.5721 | 0.4261 / 1.5721 |
+| solubility smoke (probe) — R2 / RMSE | 0.3831 / 1.6299 | 0.3371 / 1.6896 | 0.2699 / 1.7732 | 0.2178 / 1.8354 |
+
+`moe_soft` and `bucket_mean_floor` remain identical to 4 decimals on
+solubility-full (every degree-2 expert still falls back to a constant on the
+wide design, so the affinity gate does all the work); their solubility-full
+numbers *improved* vs section 7 (R2 0.4261 vs 0.1444) purely because the new
+imputation models change the affinity gate, hence the bucket-mean weights — the
+experts themselves are unchanged.
+
+### Wall-clock cost (new imputation)
+
+| Dataset / run | BIR fit+predict | Notes |
+|---|---|---|
+| Boston | 0.6 s | 130 imputation models |
+| synthetic_large | 19.1 s | 400 imputation models; slower than the old 5.9 s because degree-2 + tiny thresh admits many more candidate terms |
+| solubility smoke (20 preds, n=4) | 1.0 s | 80 imputation models |
+| solubility full (228 preds, n=10) | **136.0 s** | ~2280 imputation models; completed under a 1500 s in-R `setTimeLimit` budget and a hard bash `timeout` |
+
+The new imputation is somewhat more expensive per fit (notably
+synthetic_large ~19 s vs ~5.9 s) because `degree = 2` with `thresh = 1e-6`
+lets the forward pass evaluate and admit many more (including interaction)
+candidate terms. Solubility-full still completes in ~136 s (vs ~125 s before).
+No dataset needed to be reduced or dropped for cost; all ran at full size except
+the pre-existing `smoke` probe (a deliberate 20-of-228 predictor subset, not a
+size reduction forced by this change) and spam (expected error).
+
+### Example new imputation models (Boston, seed 2024, 70/30 train, n=10)
+
+Survey across all `n * p = 10 * 13 = 130` imputation models of the Boston
+training split, using `earth`'s `format(model)`:
+
+- **Mean #terms per model:** 4.14 (median 4, min 1, max 13).
+- **Intercept-only models:** 7 of 130 (**5.4%**).
+- **Models containing a hinge `h(...)`:** **0 of 130 (0.0%)** — confirming the
+  models are now linear main effects plus pairwise interactions, no hinges.
+- **#terms distribution:**
+
+  | #terms | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 13 |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | count | 7 | 21 | 29 | 26 | 18 | 9 | 14 | 2 | 3 | 1 |
+
+**Before/after comparison of the survey.** With the OLD degree-1 hinge
+imputation, on Boston only ~2% of the 130 models were intercept-only and the
+mean was ~14.7 terms (hinge basis functions). The NEW linear degree-2 models
+are far more parsimonious (mean 4.14 terms) and slightly more often
+intercept-only (5.4%), and contain **no hinge functions** at all — instead they
+are linear terms and pairwise products.
+
+Concrete example formulas (bucket `k`, reconstructed column, via
+`format(model)`):
+
+```
+[bucket k=1] predict column 'crim' from the other 12 columns:
+  51.30047
+  - 0.9587332 * dis*ptratio
+
+[bucket k=3] predict column 'nox' from the other 12 columns:
+  1.27153
+  - 0.05151772 * dis
+  - 0.02533569 * ptratio
+
+[bucket k=5] predict column 'dis' from the other 12 columns:
+  24.76635
+  -    1.136648 * indus
+  -    35.26751 * nox
+  +    1.965292 * indus*nox
+  - 0.001277874 * age*ptratio
+
+[bucket k=7] predict column 'indus' from the other 12 columns:
+  1.981957
+  - 0.0003309321 * zn*tax
+  +  0.004140592 * rm*tax
+
+[bucket k=9] predict column 'lstat' from the other 12 columns:
+  -3.551605
+  + 20.7148 * nox
+
+[bucket k=10] predict column 'rm' from the other 12 columns:
+  7.806424
+  - 0.0001039452 * rad*tax
+```
+
+Every term is either an intercept, a linear main effect (e.g. `20.7148 * nox`),
+or a pairwise interaction (e.g. `dis*ptratio`, `indus*nox`, `age*ptratio`);
+there are no `h(...)` hinge functions.
+
+### Verdict on the imputation-model change
+
+- **Boston — helped.** BIR OOS-R2 rose 0.5730 -> 0.6233 (RMSE 5.58 -> 5.24).
+- **synthetic_large — helped.** BIR OOS-R2 rose 0.4697 -> 0.5524
+  (RMSE 1.53 -> 1.41). The linear + pairwise-interaction imputation reconstructs
+  the redundant columns (x7≈x1, x8≈x2) and the `x4*x5` interaction structure
+  better than degree-1 hinges did, giving more discriminative affinities.
+- **solubility (full) — neutral.** Both old and new sit at OOS-R2 ≈ 0
+  (RMSE ≈ 2.08); BIR remains bounded/robust while naive earth still blows up
+  (RMSE 55). The imputation change is a wash on this wide design.
+- **solubility (smoke) — slightly hurt (probe only).** OOS-R2 0.3789 -> 0.3371.
+  This is the 20-of-228 predictor cost/pipeline probe with `n = 4`, not a fair
+  wide-data verdict.
+- **spam — unchanged (expected).** Still raises the distinct-buckets error at
+  bucketing, before any imputation model is fit.
+
+**Overall:** on the two clean regression benchmarks the linear/degree-2/tiny-
+thresh imputation is a genuine, if modest, improvement to the default BIR path
+(Boston and synthetic_large both improve); on wide solubility it is neutral; on
+the small smoke probe it is slightly worse. It never beats plain degree-2
+`earth` on the clean benchmarks, but it does narrow the gap. The new imputation
+models are also markedly simpler in form (linear + pairwise interactions, no
+hinges, ~4 terms vs ~15) at a modestly higher fit cost.
 
 ## Files
 
